@@ -1,5 +1,11 @@
 # Whisper Voice Input - Dependencies
-# Python 3.10+ required
+# Python 3.12 required (tested with 3.12.10)
+#
+# Setup:
+#   python -m venv venv
+#   venv\Scripts\pip install -r requirements.txt
+#
+# Or run build.bat which handles everything
 
 # UI Framework
 PyQt6>=6.6.0

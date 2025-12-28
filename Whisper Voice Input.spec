@@ -1,11 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
-
+# Build with: venv\Scripts\pyinstaller "Whisper Voice Input.spec" --noconfirm
+# Or run: build.bat
 
 a = Analysis(
     ['src\\main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        ('assets', 'assets'),  # Include icons and images
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -35,4 +38,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='assets\\Whisper-to-Text.ico',
 )

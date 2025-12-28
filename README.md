@@ -88,6 +88,9 @@ cd Whisper-Voice-Input
 python -m venv venv
 venv\Scripts\activate
 
+py -3.12 -m venv venv
+venv\Scripts\activate
+
 # Install dependencies
 pip install -r requirements.txt
 
@@ -101,7 +104,7 @@ On first launch:
 1. The app downloads the Whisper model (~150MB for "base")
 2. A floating widget appears in the top-right corner
 3. A system tray icon appears
-4. Press **Ctrl+Shift+Space** to test!
+4. Press **Ctrl+Alt+F4** to test!
 
 ## Running as a Desktop App
 
