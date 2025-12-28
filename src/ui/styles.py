@@ -11,11 +11,11 @@ COLOR_SUCCESS = "#4ecca3"
 COLOR_WARNING = "#ff9f1c"
 COLOR_ERROR = "#e94560"
 
-# Circular widget states (new design)
-COLOR_WIDGET_IDLE = "#6b7b8c"        # Grey-blue
-COLOR_WIDGET_RECORDING = "#00a8ff"   # Bright blue
-COLOR_WIDGET_PROCESSING = "#ffb347"  # Warm amber
-COLOR_WIDGET_ERROR = "#e94560"       # Red
+# Circular widget states (matched to _light PNG icons)
+COLOR_WIDGET_IDLE = "#8fa3b8"        # Light grey-blue
+COLOR_WIDGET_RECORDING = "#00bfff"   # Bright cyan-blue
+COLOR_WIDGET_PROCESSING = "#ffcc00"  # Bright yellow-orange
+COLOR_WIDGET_ERROR = "#ff4466"       # Bright coral-red
 
 # Tray icon colors (darker for visibility on grey taskbars)
 COLOR_TRAY_IDLE = "#4a5568"          # Darker grey (was #6b7b8c)

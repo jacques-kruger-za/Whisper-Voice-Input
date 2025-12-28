@@ -1,11 +1,26 @@
 """System tray integration."""
 
+import os
+import sys
 from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QApplication
-from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush
-from PyQt6.QtCore import pyqtSignal, QObject, QPointF, QRectF, Qt
+from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import pyqtSignal, QObject
 
 from ..config.constants import APP_NAME, STATE_IDLE, STATE_RECORDING, STATE_PROCESSING, STATE_ERROR
-from .styles import COLOR_TRAY_IDLE, COLOR_TRAY_RECORDING, COLOR_TRAY_PROCESSING, COLOR_TRAY_ERROR
+
+
+def get_assets_dir() -> str:
+    """Get the assets directory path, works for both dev and PyInstaller."""
+    if getattr(sys, 'frozen', False):
+        # Running as PyInstaller bundle
+        base_path = sys._MEIPASS
+    else:
+        # Running in development
+        base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base_path, 'assets')
+
+
+ASSETS_DIR = get_assets_dir()
 
 
 class TrayIcon(QObject):
@@ -28,98 +43,13 @@ class TrayIcon(QObject):
         self._update_icon()
 
     def _setup_icons(self) -> None:
-        """Create icons for different states with darker colors for taskbar visibility."""
-        self._icons = {}
-        for state, color in [
-            (STATE_IDLE, COLOR_TRAY_IDLE),
-            (STATE_RECORDING, COLOR_TRAY_RECORDING),
-            (STATE_PROCESSING, COLOR_TRAY_PROCESSING),
-            (STATE_ERROR, COLOR_TRAY_ERROR),
-        ]:
-            self._icons[state] = self._create_icon(color)
-
-    def _create_icon(self, color: str, size: int = 64) -> QIcon:
-        """Create a bold, thick condenser microphone icon for maximum taskbar visibility."""
-        pixmap = QPixmap(size, size)
-        pixmap.fill(QColor(0, 0, 0, 0))  # Transparent background
-
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        center_x = size / 2
-        icon_color = QColor(color)
-
-        # Minimal margins for maximum size
-        margin = size * 0.04
-        available_height = size - (2 * margin)
-
-        # Bold proportions - wider and taller
-        head_height = available_height * 0.45
-        head_width = head_height * 0.85  # Wider head
-        head_x = center_x - head_width / 2
-        head_y = margin
-
-        # MUCH thicker lines for visibility
-        line_width = max(4.0, size / 12)  # Much thicker
-
-        # Filled mic head - bold and solid
-        painter.setBrush(icon_color)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(
-            QRectF(head_x, head_y, head_width, head_height),
-            head_width / 2, head_width / 2
-        )
-
-        # Cut out horizontal slots (3 dark lines) - thicker slots
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-
-        slot_width = head_width * 0.5
-        slot_height = max(3, head_height * 0.08)  # Thicker slots
-        slot_x = center_x - slot_width / 2
-        slot_spacing = head_height * 0.18
-
-        for i in range(3):
-            slot_y = head_y + head_height * 0.26 + i * slot_spacing
-            painter.drawRoundedRect(
-                QRectF(slot_x, slot_y, slot_width, slot_height),
-                slot_height / 2, slot_height / 2
-            )
-
-        # Reset composition mode
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-
-        # Thick cradle/mount arc
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        pen = QPen(icon_color, line_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-
-        cradle_width = head_width * 1.3
-        cradle_height = head_height * 0.55
-        cradle_x = center_x - cradle_width / 2
-        cradle_y = head_y + head_height - cradle_height * 0.25
-
-        painter.drawArc(
-            QRectF(cradle_x, cradle_y, cradle_width, cradle_height),
-            0, -180 * 16
-        )
-
-        # Thick stand
-        stand_top = cradle_y + cradle_height / 2
-        stand_bottom = margin + available_height * 0.88
-        painter.drawLine(
-            QPointF(center_x, stand_top),
-            QPointF(center_x, stand_bottom)
-        )
-
-        # Thick base
-        base_width = head_width * 1.0
-        painter.drawLine(
-            QPointF(center_x - base_width / 2, stand_bottom),
-            QPointF(center_x + base_width / 2, stand_bottom)
-        )
-
-        painter.end()
-        return QIcon(pixmap)
+        """Load PNG icons for different states from assets folder."""
+        self._icons = {
+            STATE_IDLE: QIcon(os.path.join(ASSETS_DIR, 'mic_ico_grey_tray.png')),
+            STATE_RECORDING: QIcon(os.path.join(ASSETS_DIR, 'mic_ico_blue_tray.png')),
+            STATE_PROCESSING: QIcon(os.path.join(ASSETS_DIR, 'mic_ico_orange_tray.png')),
+            STATE_ERROR: QIcon(os.path.join(ASSETS_DIR, 'mic_ico_red_tray.png')),
+        }
 
     def _setup_menu(self) -> None:
         """Create the context menu."""

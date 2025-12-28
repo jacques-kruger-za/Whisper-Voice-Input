@@ -1,14 +1,38 @@
 """Circular floating recording widget with audio-reactive visualizations."""
 
 import math
+import os
 import random
+import sys
 from PyQt6.QtWidgets import QWidget, QApplication, QLabel, QVBoxLayout
 from PyQt6.QtCore import Qt, QPoint, QTimer, pyqtSignal, QRectF, QPointF
 from PyQt6.QtGui import (
     QPainter, QColor, QPen, QBrush, QRadialGradient,
     QPainterPath, QPaintEvent, QMouseEvent, QEnterEvent, QFont,
-    QLinearGradient
+    QLinearGradient, QPixmap
 )
+
+
+def get_assets_dir() -> str:
+    """Get the assets directory path, works for both dev and PyInstaller."""
+    if getattr(sys, 'frozen', False):
+        # Running as PyInstaller bundle
+        base_path = sys._MEIPASS
+    else:
+        # Running in development
+        base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base_path, 'assets')
+
+
+ASSETS_DIR = get_assets_dir()
+
+# Mapping of states to _light PNG icons
+ICON_FILES = {
+    'idle': 'mic_ico_grey_light.png',
+    'recording': 'mic_ico_blue_light.png',
+    'processing': 'mic_ico_orange_light.png',
+    'error': 'mic_ico_red_light.png',
+}
 
 from ..config.constants import (
     WIDGET_SIZES,
@@ -42,7 +66,7 @@ THICKNESS_SCALE = {
 
 
 class FrequencyBar:
-    """A single frequency bar that animates with audio."""
+    """A single frequency bar that animates with audio (legacy - kept for reference)."""
 
     def __init__(self, angle: float, base_height: float):
         self.angle = angle
@@ -50,25 +74,90 @@ class FrequencyBar:
         self.current_height = 0.0
         self.target_height = 0.0
         self.velocity = 0.0
-        # Each bar has slightly different response characteristics
         self.sensitivity = random.uniform(0.7, 1.3)
         self.decay = random.uniform(0.85, 0.92)
 
     def update(self, audio_level: float):
         """Update bar height with spring-like physics."""
-        # Set new target based on audio (with some randomness for organic feel)
         noise = random.uniform(-0.15, 0.15)
         self.target_height = self.base_height * (0.3 + audio_level * self.sensitivity + noise)
         self.target_height = clamp(self.target_height, 0, self.base_height)
-
-        # Spring physics for smooth animation
         spring = 0.3
         damping = 0.7
-
         force = (self.target_height - self.current_height) * spring
         self.velocity = (self.velocity + force) * damping
         self.current_height += self.velocity
         self.current_height = clamp(self.current_height, 0, self.base_height)
+
+
+class VerticalAudioBar:
+    """A vertical audio-reactive bar overlaid on the mic icon."""
+
+    # Blue spectrum colors (outer to center pattern: 1,2,3,4,3,2,1)
+    COLORS = [
+        "#00e5ff",  # Cyan (outer)
+        "#00d4ff",  # Light cyan-blue
+        "#00c3ff",  # Cyan-blue
+        "#00a8ff",  # Bright blue (center)
+        "#00c3ff",  # Cyan-blue
+        "#00d4ff",  # Light cyan-blue
+        "#00e5ff",  # Cyan (outer)
+    ]
+
+    def __init__(self, index: int, x_offset: float, max_height: float):
+        self.index = index
+        self.x_offset = x_offset  # Offset from center
+        self.max_height = max_height
+        self.current_height = 0.0
+        self.target_height = 0.0
+        self.velocity = 0.0
+
+        # Center bars (index 2,3,4) are more sensitive
+        center_distance = abs(index - 3)  # 0 for center, 3 for edges
+        self.sensitivity = 1.0 - (center_distance * 0.15)  # Center: 1.0, edges: 0.55
+
+        # Varying spring characteristics for organic movement
+        self.spring = 0.25 + random.uniform(0, 0.1)
+        self.damping = 0.65 + random.uniform(0, 0.1)
+
+        # Phase offset for staggered response (wave effect)
+        self.phase_offset = index * 0.08
+
+        # Color from spectrum
+        self.color = self.COLORS[index]
+
+        # Minimum height when idle (slight visual presence)
+        self.min_height = max_height * 0.05
+
+    def update(self, audio_level: float, time_offset: float = 0.0):
+        """Update bar height based on audio level with spring physics."""
+        # Audio threshold - only animate with actual sound
+        THRESHOLD = 0.05
+
+        if audio_level < THRESHOLD:
+            # No sound - settle to minimum
+            self.target_height = self.min_height
+        else:
+            # Sound detected - animate based on level
+            # Apply phase offset for wave effect
+            phase_multiplier = 0.8 + 0.4 * math.sin(time_offset + self.phase_offset * 10)
+
+            # Calculate target with sensitivity and phase
+            normalized_audio = (audio_level - THRESHOLD) / (1.0 - THRESHOLD)
+            self.target_height = self.min_height + (
+                self.max_height - self.min_height
+            ) * normalized_audio * self.sensitivity * phase_multiplier
+
+            # Add slight randomness for organic feel
+            self.target_height *= random.uniform(0.85, 1.15)
+
+        self.target_height = clamp(self.target_height, self.min_height, self.max_height)
+
+        # Spring physics
+        force = (self.target_height - self.current_height) * self.spring
+        self.velocity = (self.velocity + force) * self.damping
+        self.current_height += self.velocity
+        self.current_height = clamp(self.current_height, self.min_height, self.max_height)
 
 
 class PulseRing:
@@ -211,14 +300,13 @@ class FloatingWidget(QWidget):
         self._error_flash_alpha = 0
         self._rotation_offset = 0.0  # Slow rotation for visual interest
 
-        # Tooltip
-        self._tooltip = InfoTooltip()
-        self._tooltip.hide()
+        # Tooltip (commented out - may use for onboarding later)
+        # self._tooltip = InfoTooltip()
+        # self._tooltip.hide()
 
-        # Timers
+        # Timers (created but not started until after _setup_ui initializes visualizers)
         self._animation_timer = QTimer(self)
         self._animation_timer.timeout.connect(self._update_animations)
-        self._animation_timer.start(16)  # ~60fps
 
         self._pulse_timer = QTimer(self)
         self._pulse_timer.timeout.connect(self._spawn_pulse)
@@ -228,6 +316,9 @@ class FloatingWidget(QWidget):
         self._error_timer.setSingleShot(True)
 
         self._setup_ui()
+
+        # Start animation timer after visualizers are initialized
+        self._animation_timer.start(16)  # ~60fps
 
     def _setup_ui(self) -> None:
         """Initialize the widget."""
@@ -245,17 +336,27 @@ class FloatingWidget(QWidget):
         self._position_top_right()
 
     def _init_visualizers(self) -> None:
-        """Initialize frequency bars and pulse rings."""
-        # Create frequency bars around the circle (24 bars for smooth look)
-        num_bars = 24
-        bar_height = self._size * 0.15  # Max bar height
-        self._frequency_bars = []
-        for i in range(num_bars):
-            angle = (2 * math.pi * i) / num_bars
-            self._frequency_bars.append(FrequencyBar(angle, bar_height))
+        """Initialize vertical audio bars and pulse rings."""
+        # Create 7 vertical audio bars overlaid on mic icon
+        # Bars are distributed across the mic icon width
+        icon_width = self._size * 0.5  # Same as mic icon size
+        bar_spacing = icon_width / 8  # Space between bars
+        max_bar_height = self._size * 0.4  # Max height of bars
+
+        self._vertical_bars: list[VerticalAudioBar] = []
+        for i in range(7):
+            # Calculate x offset from center (-3 to +3 bar positions)
+            x_offset = (i - 3) * bar_spacing
+            self._vertical_bars.append(VerticalAudioBar(i, x_offset, max_bar_height))
+
+        # Time counter for phase animation
+        self._animation_time = 0.0
 
         # Create pulse rings (3 rings with staggered timing)
         self._pulse_rings = [PulseRing() for _ in range(3)]
+
+        # Legacy frequency bars (kept but not used)
+        self._frequency_bars: list[FrequencyBar] = []
 
     def _position_top_right(self) -> None:
         """Position widget in top-right corner."""
@@ -327,9 +428,12 @@ class FloatingWidget(QWidget):
         self._smoothed_audio += (self._audio_level - self._smoothed_audio) * 0.15
 
         if self._state == STATE_RECORDING:
-            # Update frequency bars
-            for bar in self._frequency_bars:
-                bar.update(self._audio_level)
+            # Update animation time for phase effects
+            self._animation_time += 0.1
+
+            # Update vertical audio bars
+            for bar in self._vertical_bars:
+                bar.update(self._audio_level, self._animation_time)
 
             # Update pulse rings
             for ring in self._pulse_rings:
@@ -338,11 +442,6 @@ class FloatingWidget(QWidget):
 
             # Update glow intensity
             self._glow_intensity = 0.5 + self._smoothed_audio * 0.5
-
-            # Slow rotation for visual interest
-            self._rotation_offset += 0.005
-            if self._rotation_offset > 2 * math.pi:
-                self._rotation_offset -= 2 * math.pi
 
             needs_update = True
 
@@ -388,11 +487,10 @@ class FloatingWidget(QWidget):
         center = QPointF(self._size / 2, self._size / 2)
         radius = (self._size / 2) - 4
 
-        # Recording visualizations (behind everything)
+        # Recording visualizations (behind main content)
         if self._state == STATE_RECORDING:
             self._draw_outer_glow(painter, center, radius)
             self._draw_pulse_rings(painter, center, radius)
-            self._draw_frequency_bars(painter, center, radius)
 
         # Draw main circle background
         self._draw_background(painter, center, radius)
@@ -402,6 +500,10 @@ class FloatingWidget(QWidget):
 
         # Draw condenser microphone icon
         self._draw_condenser_mic(painter, center)
+
+        # Draw vertical audio bars overlaid on mic (recording state only)
+        if self._state == STATE_RECORDING:
+            self._draw_vertical_audio_bars(painter, center)
 
         # Draw processing glow
         if self._state == STATE_PROCESSING:
@@ -451,37 +553,43 @@ class FloatingWidget(QWidget):
                 painter.drawEllipse(center, ring_radius, ring_radius)
 
     def _draw_frequency_bars(self, painter: QPainter, center: QPointF, radius: float) -> None:
-        """Draw audio-reactive frequency bars around the circle."""
-        color = QColor(COLOR_WIDGET_RECORDING)
-        bar_width = self._get_scaled_thickness(3.5)
+        """Draw audio-reactive frequency bars around the circle (legacy - disabled)."""
+        # Legacy radial bars - kept for reference but no longer used
+        pass
 
-        # Bar starts just outside the main circle
-        bar_start_radius = radius + 3
+    def _draw_vertical_audio_bars(self, painter: QPainter, center: QPointF) -> None:
+        """Draw vertical audio-reactive bars overlaid on the mic icon."""
+        # Bar visual properties
+        bar_width = self._get_scaled_thickness(4.0)  # Rounded bar width
 
-        for bar in self._frequency_bars:
-            if bar.current_height < 1:
+        for bar in self._vertical_bars:
+            # Skip if bar is at minimum (no visual needed)
+            if bar.current_height <= bar.min_height * 1.1:
                 continue
 
-            angle = bar.angle + self._rotation_offset
+            # Calculate bar position (centered vertically on widget)
+            x = center.x() + bar.x_offset
+            half_height = bar.current_height / 2
 
-            # Calculate bar endpoints
-            start_x = center.x() + bar_start_radius * math.cos(angle)
-            start_y = center.y() + bar_start_radius * math.sin(angle)
-            end_x = center.x() + (bar_start_radius + bar.current_height) * math.cos(angle)
-            end_y = center.y() + (bar_start_radius + bar.current_height) * math.sin(angle)
+            # Bar extends equally above and below center
+            y_top = center.y() - half_height
+            y_bottom = center.y() + half_height
 
-            # Color intensity based on height
-            intensity = bar.current_height / bar.base_height
-            color.setAlphaF(clamp(0.5 + intensity * 0.5))
+            # Set bar color with 30% opacity
+            color = QColor(bar.color)
+            color.setAlphaF(0.30)
 
+            # Draw rounded vertical bar
             pen = QPen(color, bar_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
-            painter.drawLine(QPointF(start_x, start_y), QPointF(end_x, end_y))
+            painter.drawLine(QPointF(x, y_top), QPointF(x, y_bottom))
 
     def _draw_background(self, painter: QPainter, center: QPointF, radius: float) -> None:
-        """Draw the dark circular background."""
+        """Draw the dark circular background with 10% transparency."""
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(COLOR_BG_DARK))
+        bg_color = QColor(COLOR_BG_DARK)
+        bg_color.setAlphaF(0.10)
+        painter.setBrush(bg_color)
         painter.drawEllipse(center, radius, radius)
 
     def _draw_border(self, painter: QPainter, center: QPointF, radius: float) -> None:
@@ -519,87 +627,34 @@ class FloatingWidget(QWidget):
         painter.drawEllipse(center, glow_radius, glow_radius)
 
     def _draw_condenser_mic(self, painter: QPainter, center: QPointF) -> None:
-        """Draw condenser microphone icon."""
-        color = self._get_state_color()
-        icon_size = self._size * 0.5
+        """Draw microphone icon from PNG asset."""
+        # Get the appropriate icon file for current state
+        icon_file = ICON_FILES.get(self._state, ICON_FILES['idle'])
+        icon_path = os.path.join(ASSETS_DIR, icon_file)
 
+        # Load the pixmap
+        pixmap = QPixmap(icon_path)
+        if pixmap.isNull():
+            return  # Fallback: don't draw if image not found
+
+        # Calculate icon size (with breathing effect for processing state)
+        icon_size = int(self._size * 0.5)
         if self._state == STATE_PROCESSING:
-            icon_size *= self._breathing_scale
+            icon_size = int(icon_size * self._breathing_scale)
 
-        line_thick = self._get_scaled_thickness(2.0)
-        line_thin = self._get_scaled_thickness(1.5)
-
-        head_width = icon_size * 0.5
-        head_height = icon_size * 0.55
-        head_x = center.x() - head_width / 2
-        head_y = center.y() - icon_size * 0.35
-
-        if self._state in (STATE_RECORDING, STATE_PROCESSING):
-            painter.setBrush(QColor(color))
-            painter.setPen(Qt.PenStyle.NoPen)
-        else:
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(color, line_thin))
-
-        head_rect = QRectF(head_x, head_y, head_width, head_height)
-        painter.drawRoundedRect(head_rect, head_width / 2, head_width / 2)
-
-        if self._state in (STATE_RECORDING, STATE_PROCESSING):
-            slot_color = QColor(COLOR_BG_DARK)
-            painter.setBrush(slot_color)
-            painter.setPen(Qt.PenStyle.NoPen)
-        else:
-            painter.setPen(QPen(color, line_thin))
-
-        slot_width = head_width * 0.6
-        slot_height = max(1.5, icon_size * 0.03)
-        slot_x = center.x() - slot_width / 2
-        slot_spacing = head_height * 0.2
-
-        for i in range(3):
-            slot_y = head_y + head_height * 0.25 + i * slot_spacing
-            if self._state in (STATE_RECORDING, STATE_PROCESSING):
-                painter.drawRoundedRect(
-                    QRectF(slot_x, slot_y, slot_width, slot_height),
-                    slot_height / 2, slot_height / 2
-                )
-            else:
-                painter.drawLine(
-                    QPointF(slot_x, slot_y + slot_height / 2),
-                    QPointF(slot_x + slot_width, slot_y + slot_height / 2)
-                )
-
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        if self._state in (STATE_RECORDING, STATE_PROCESSING):
-            painter.setPen(QPen(color, line_thick))
-        else:
-            painter.setPen(QPen(color, line_thin))
-
-        cradle_rect = QRectF(
-            head_x - head_width * 0.15,
-            head_y + head_height * 0.4,
-            head_width * 1.3,
-            head_height * 0.8
-        )
-        painter.drawArc(cradle_rect, 0, 180 * 16)
-
-        stand_x = center.x()
-        stand_top = head_y + head_height + head_height * 0.25
-        stand_height = icon_size * 0.15
-
-        if self._state in (STATE_RECORDING, STATE_PROCESSING):
-            painter.setPen(QPen(color, line_thick))
-        painter.drawLine(
-            QPointF(stand_x, stand_top),
-            QPointF(stand_x, stand_top + stand_height)
+        # Scale the pixmap with smooth transformation
+        scaled = pixmap.scaled(
+            icon_size, icon_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
         )
 
-        base_width = icon_size * 0.35
-        base_y = stand_top + stand_height
-        painter.drawLine(
-            QPointF(center.x() - base_width / 2, base_y),
-            QPointF(center.x() + base_width / 2, base_y)
-        )
+        # Calculate position to center the icon
+        x = int(center.x() - scaled.width() / 2)
+        y = int(center.y() - scaled.height() / 2)
+
+        # Draw the icon
+        painter.drawPixmap(x, y, scaled)
 
     def _draw_processing_glow(self, painter: QPainter, center: QPointF, radius: float) -> None:
         """Draw breathing glow during processing."""
@@ -632,14 +687,22 @@ class FloatingWidget(QWidget):
         if state == STATE_RECORDING:
             if not self._pulse_timer.isActive():
                 self._pulse_timer.start(400)
-            # Reset bars
-            for bar in self._frequency_bars:
-                bar.current_height = 0
-                bar.velocity = 0
+            # Reset vertical audio bars
+            if hasattr(self, '_vertical_bars'):
+                for bar in self._vertical_bars:
+                    bar.current_height = bar.min_height
+                    bar.velocity = 0
+            if hasattr(self, '_animation_time'):
+                self._animation_time = 0.0
         else:
             self._pulse_timer.stop()
             for ring in self._pulse_rings:
                 ring.active = False
+            # Reset vertical bars to minimum when not recording
+            if hasattr(self, '_vertical_bars'):
+                for bar in self._vertical_bars:
+                    bar.current_height = bar.min_height
+                    bar.velocity = 0
 
         if state == STATE_ERROR:
             self._error_flash_alpha = 180
@@ -656,25 +719,25 @@ class FloatingWidget(QWidget):
         self._audio_level = clamp(level)
 
     def enterEvent(self, event: QEnterEvent) -> None:
-        """Show tooltip on hover."""
-        if self._state == STATE_IDLE:
-            self._tooltip.set_text("Voice Input", "Click to Record")
-            widget_center = self.mapToGlobal(QPoint(self._size // 2, self._size // 2))
-            self._tooltip.show_at(widget_center, self._size)
-        elif self._state == STATE_RECORDING:
-            self._tooltip.set_text("Recording", "Click to Transcribe")
-            widget_center = self.mapToGlobal(QPoint(self._size // 2, self._size // 2))
-            self._tooltip.show_at(widget_center, self._size)
+        """Handle mouse enter (tooltip disabled - may use for onboarding later)."""
+        # if self._state == STATE_IDLE:
+        #     self._tooltip.set_text("Voice Input", "Click to Record")
+        #     widget_center = self.mapToGlobal(QPoint(self._size // 2, self._size // 2))
+        #     self._tooltip.show_at(widget_center, self._size)
+        # elif self._state == STATE_RECORDING:
+        #     self._tooltip.set_text("Recording", "Click to Transcribe")
+        #     widget_center = self.mapToGlobal(QPoint(self._size // 2, self._size // 2))
+        #     self._tooltip.show_at(widget_center, self._size)
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
-        """Hide tooltip."""
-        self._tooltip.hide()
+        """Handle mouse leave (tooltip disabled)."""
+        # self._tooltip.hide()
         super().leaveEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Handle mouse press."""
-        self._tooltip.hide()
+        # self._tooltip.hide()
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos = event.globalPosition().toPoint()
             self._drag_start_widget_pos = self.pos()

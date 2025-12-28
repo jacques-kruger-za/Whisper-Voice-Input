@@ -38,12 +38,12 @@ WIDGET_SIZES = {
 DEFAULT_WIDGET_SIZE = "compact"
 WIDGET_OPACITY = 0.95
 
-# Widget colors
+# Widget colors (matched to _light PNG icons)
 COLOR_BACKGROUND = "#0d1f2d"  # Dark teal blue
-COLOR_IDLE = "#6b7b8c"        # Grey-blue for idle/ready
-COLOR_RECORDING = "#00a8ff"   # Bright blue for recording
-COLOR_PROCESSING = "#ffb347"  # Warm amber for processing
-COLOR_ERROR = "#e94560"       # Red for errors
+COLOR_IDLE = "#8fa3b8"        # Light grey-blue for idle/ready
+COLOR_RECORDING = "#00bfff"   # Bright cyan-blue for recording
+COLOR_PROCESSING = "#ffcc00"  # Bright yellow-orange for processing
+COLOR_ERROR = "#ff4466"       # Bright coral-red for errors
 
 # State constants
 STATE_IDLE = "idle"

@@ -16,7 +16,7 @@ A Windows desktop application that converts speech to text using OpenAI's Whispe
 
 ### Recording Flow
 
-1. Press **Ctrl+Shift+Space** (or click the floating widget)
+1. Press **Ctrl+Alt+F4** (or click the floating widget)
 2. Speak into your microphone
 3. Press the hotkey again (or click) to stop
 4. Audio is transcribed by Whisper

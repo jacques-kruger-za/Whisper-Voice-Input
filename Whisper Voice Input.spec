@@ -1,38 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-import os
-spec_root = os.path.abspath(SPECPATH)
 
 a = Analysis(
     ['src\\main.py'],
-    pathex=[spec_root],
+    pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[
-        'src',
-        'src.app',
-        'src.config',
-        'src.config.constants',
-        'src.config.settings',
-        'src.audio',
-        'src.audio.recorder',
-        'src.audio.processor',
-        'src.recognition',
-        'src.recognition.base',
-        'src.recognition.whisper_local',
-        'src.recognition.whisper_api',
-        'src.recognition.cleanup',
-        'src.input',
-        'src.input.hotkey',
-        'src.input.injector',
-        'src.ui',
-        'src.ui.widget',
-        'src.ui.tray',
-        'src.ui.settings',
-        'src.ui.styles',
-        'faster_whisper',
-        'platformdirs',
-    ],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -61,5 +35,4 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['assets/Whisper-to-Text.ico'],
 )
