@@ -1,0 +1,58 @@
+# Claude Code
+.claude/
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.manifest
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Local configuration
+.env
+.env.local
+*.local
+
+# Whisper model cache (downloaded on first run)
+models/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/

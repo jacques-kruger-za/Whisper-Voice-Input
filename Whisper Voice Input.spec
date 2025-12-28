@@ -1,0 +1,65 @@
+# -*- mode: python ; coding: utf-8 -*-
+
+import os
+spec_root = os.path.abspath(SPECPATH)
+
+a = Analysis(
+    ['src\\main.py'],
+    pathex=[spec_root],
+    binaries=[],
+    datas=[],
+    hiddenimports=[
+        'src',
+        'src.app',
+        'src.config',
+        'src.config.constants',
+        'src.config.settings',
+        'src.audio',
+        'src.audio.recorder',
+        'src.audio.processor',
+        'src.recognition',
+        'src.recognition.base',
+        'src.recognition.whisper_local',
+        'src.recognition.whisper_api',
+        'src.recognition.cleanup',
+        'src.input',
+        'src.input.hotkey',
+        'src.input.injector',
+        'src.ui',
+        'src.ui.widget',
+        'src.ui.tray',
+        'src.ui.settings',
+        'src.ui.styles',
+        'faster_whisper',
+        'platformdirs',
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+    optimize=0,
+)
+pyz = PYZ(a.pure)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.datas,
+    [],
+    name='Whisper Voice Input',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=['assets/Whisper-to-Text.ico'],
+)

@@ -1,0 +1,24 @@
+# Whisper Voice Input - Dependencies
+# Python 3.10+ required
+
+# UI Framework
+PyQt6>=6.6.0
+
+# Speech Recognition
+faster-whisper>=1.0.0
+openai>=1.0.0
+
+# Audio Capture
+sounddevice>=0.4.6
+numpy>=1.24.0
+scipy>=1.11.0
+
+# Text Injection
+pyperclip>=1.8.2
+pyautogui>=0.9.54
+
+# Global Hotkey
+pynput>=1.7.6
+
+# Utilities
+platformdirs>=4.0.0
