@@ -7,6 +7,9 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import pyqtSignal, QObject
 
 from ..config.constants import APP_NAME, STATE_IDLE, STATE_RECORDING, STATE_PROCESSING, STATE_ERROR
+from ..config.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def get_assets_dir() -> str:
@@ -35,24 +38,29 @@ class TrayIcon(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        logger.debug("Initializing TrayIcon")
         self._tray = QSystemTrayIcon(parent)
         self._state = STATE_IDLE
         self._widget_visible = True
         self._setup_icons()
         self._setup_menu()
         self._update_icon()
+        logger.debug("TrayIcon initialized successfully")
 
     def _setup_icons(self) -> None:
         """Load PNG icons for different states from assets folder."""
+        logger.debug("Loading tray icons from %s", ASSETS_DIR)
         self._icons = {
             STATE_IDLE: QIcon(os.path.join(ASSETS_DIR, 'mic_ico_grey_tray.png')),
             STATE_RECORDING: QIcon(os.path.join(ASSETS_DIR, 'mic_ico_blue_tray.png')),
             STATE_PROCESSING: QIcon(os.path.join(ASSETS_DIR, 'mic_ico_orange_tray.png')),
             STATE_ERROR: QIcon(os.path.join(ASSETS_DIR, 'mic_ico_red_tray.png')),
         }
+        logger.debug("Tray icons loaded for %d states", len(self._icons))
 
     def _setup_menu(self) -> None:
         """Create the context menu."""
+        logger.debug("Setting up tray context menu")
         self._menu = QMenu()
 
         # Record action
@@ -79,9 +87,11 @@ class TrayIcon(QObject):
 
         # Left click to toggle recording
         self._tray.activated.connect(self._on_activated)
+        logger.debug("Tray context menu setup complete")
 
     def _toggle_widget(self) -> None:
         """Toggle widget visibility."""
+        logger.debug("Toggling widget visibility (currently visible=%s)", self._widget_visible)
         if self._widget_visible:
             self.hide_widget.emit()
         else:
@@ -89,15 +99,19 @@ class TrayIcon(QObject):
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         """Handle tray icon activation."""
+        logger.debug("Tray icon activated with reason: %s", reason)
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             # Left click - toggle recording
+            logger.debug("Left click detected, emitting toggle_recording signal")
             self.toggle_recording.emit()
         elif reason == QSystemTrayIcon.ActivationReason.MiddleClick:
             # Middle click - toggle widget
+            logger.debug("Middle click detected, toggling widget")
             self._toggle_widget()
 
     def set_state(self, state: str) -> None:
         """Update icon and menu based on state."""
+        logger.debug("Setting tray state: %s", state)
         self._state = state
         self._update_icon()
         self._update_menu()
@@ -114,7 +128,9 @@ class TrayIcon(QObject):
             STATE_PROCESSING: f"{APP_NAME} - Processing...",
             STATE_ERROR: f"{APP_NAME} - Error",
         }
-        self._tray.setToolTip(tooltips.get(self._state, APP_NAME))
+        tooltip = tooltips.get(self._state, APP_NAME)
+        self._tray.setToolTip(tooltip)
+        logger.debug("Updated tray icon and tooltip for state: %s", self._state)
 
     def _update_menu(self) -> None:
         """Update menu text based on state."""
@@ -125,6 +141,7 @@ class TrayIcon(QObject):
 
     def set_widget_visible(self, visible: bool) -> None:
         """Update widget visibility state."""
+        logger.debug("Setting widget visibility state: %s", visible)
         self._widget_visible = visible
         if visible:
             self._widget_action.setText("Hide Widget")
@@ -133,14 +150,17 @@ class TrayIcon(QObject):
 
     def show(self) -> None:
         """Show the tray icon."""
+        logger.debug("Showing tray icon")
         self._tray.show()
 
     def hide(self) -> None:
         """Hide the tray icon."""
+        logger.debug("Hiding tray icon")
         self._tray.hide()
 
     def show_message(self, title: str, message: str, duration: int = 3000) -> None:
         """Show a balloon notification."""
+        logger.debug("Showing tray message: title=%s, message=%s, duration=%d", title, message, duration)
         self._tray.showMessage(title, message, QSystemTrayIcon.MessageIcon.Information, duration)
 
     def is_visible(self) -> bool:
