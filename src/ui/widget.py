@@ -65,31 +65,6 @@ THICKNESS_SCALE = {
 }
 
 
-class FrequencyBar:
-    """A single frequency bar that animates with audio (legacy - kept for reference)."""
-
-    def __init__(self, angle: float, base_height: float):
-        self.angle = angle
-        self.base_height = base_height
-        self.current_height = 0.0
-        self.target_height = 0.0
-        self.velocity = 0.0
-        self.sensitivity = random.uniform(0.7, 1.3)
-        self.decay = random.uniform(0.85, 0.92)
-
-    def update(self, audio_level: float):
-        """Update bar height with spring-like physics."""
-        noise = random.uniform(-0.15, 0.15)
-        self.target_height = self.base_height * (0.3 + audio_level * self.sensitivity + noise)
-        self.target_height = clamp(self.target_height, 0, self.base_height)
-        spring = 0.3
-        damping = 0.7
-        force = (self.target_height - self.current_height) * spring
-        self.velocity = (self.velocity + force) * damping
-        self.current_height += self.velocity
-        self.current_height = clamp(self.current_height, 0, self.base_height)
-
-
 class VerticalAudioBar:
     """A vertical audio-reactive bar overlaid on the mic icon."""
 
@@ -289,7 +264,6 @@ class FloatingWidget(QWidget):
         self._total_drag_distance = 0
 
         # Animation state
-        self._frequency_bars: list[FrequencyBar] = []
         self._pulse_rings: list[PulseRing] = []
         self._glow_intensity = 0.0
         self._breathing_scale = 1.0
@@ -354,9 +328,6 @@ class FloatingWidget(QWidget):
 
         # Create pulse rings (3 rings with staggered timing)
         self._pulse_rings = [PulseRing() for _ in range(3)]
-
-        # Legacy frequency bars (kept but not used)
-        self._frequency_bars: list[FrequencyBar] = []
 
     def _position_top_right(self) -> None:
         """Position widget in top-right corner."""
@@ -551,11 +522,6 @@ class FloatingWidget(QWidget):
                 painter.setPen(pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawEllipse(center, ring_radius, ring_radius)
-
-    def _draw_frequency_bars(self, painter: QPainter, center: QPointF, radius: float) -> None:
-        """Draw audio-reactive frequency bars around the circle (legacy - disabled)."""
-        # Legacy radial bars - kept for reference but no longer used
-        pass
 
     def _draw_vertical_audio_bars(self, painter: QPainter, center: QPointF) -> None:
         """Draw vertical audio-reactive bars overlaid on the mic icon."""
