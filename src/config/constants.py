@@ -31,9 +31,9 @@ DEFAULT_ENGINE = ENGINE_LOCAL
 
 # UI constants - Circular widget
 WIDGET_SIZES = {
-    "compact": 40,
-    "medium": 60,
-    "large": 80,
+    "compact": 60,
+    "medium": 80,
+    "large": 100,
 }
 DEFAULT_WIDGET_SIZE = "compact"
 WIDGET_OPACITY = 0.95
