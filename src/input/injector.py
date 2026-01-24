@@ -4,6 +4,10 @@ import time
 import pyperclip
 import pyautogui
 
+from ..config.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 class TextInjector:
     """Inject text into focused application using clipboard paste."""
@@ -59,7 +63,7 @@ class TextInjector:
             return True
 
         except Exception as e:
-            print(f"Text injection error: {e}")
+            logger.error("Text injection error: %s", e)
             return False
 
     def inject_with_keystroke(self, text: str) -> bool:
@@ -92,7 +96,7 @@ class TextInjector:
             return True
 
         except Exception as e:
-            print(f"Keystroke injection error: {e}")
+            logger.error("Keystroke injection error: %s", e)
             return False
 
 
