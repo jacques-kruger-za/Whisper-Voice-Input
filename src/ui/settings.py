@@ -22,7 +22,10 @@ from ..config import get_settings, WHISPER_MODELS, SUPPORTED_LANGUAGES, ENGINE_L
 from ..config.constants import APP_NAME, APP_VERSION
 from ..audio import AudioRecorder
 from ..input.hotkey import HotkeyCapture, hotkey_to_string
+from ..config.logging_config import get_logger
 from .styles import SETTINGS_STYLE
+
+logger = get_logger(__name__)
 
 
 class SettingsWindow(QDialog):
@@ -365,7 +368,7 @@ class SettingsWindow(QDialog):
 
             winreg.CloseKey(key)
         except Exception as e:
-            print(f"Failed to update autostart: {e}")
+            logger.error(f"Failed to update autostart: {e}")
 
     def closeEvent(self, event) -> None:
         """Handle window close."""
