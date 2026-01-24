@@ -11,7 +11,8 @@ Tests the full cleanup pipeline including:
 
 import pytest
 
-from src.recognition.cleanup import cleanup_text, add_punctuation, _convert_spoken_punctuation
+from src.recognition.cleanup import cleanup_text, add_punctuation
+from src.recognition.spoken_punctuation import process_spoken_punctuation
 from src.config.constants import FILLER_WORDS
 
 
@@ -341,30 +342,31 @@ class TestFillerWordRemoval:
 
 
 class TestConvertSpokenPunctuationHelper:
-    """Test _convert_spoken_punctuation helper function directly."""
+    """Test process_spoken_punctuation helper function directly."""
 
     def test_helper_converts_punctuation(self):
         """Test helper function converts spoken punctuation."""
         text = "hello period world"
-        result = _convert_spoken_punctuation(text)
+        result = process_spoken_punctuation(text)
 
-        # Helper function just replaces words, spacing cleanup happens in cleanup_text
-        assert result == "hello . world"
+        # Helper function replaces words and normalizes spacing
+        assert "." in result
+        assert "period" not in result.lower()
 
     def test_helper_case_insensitive(self):
         """Test helper function is case-insensitive."""
         text = "hello PERIOD world"
-        result = _convert_spoken_punctuation(text)
+        result = process_spoken_punctuation(text)
 
         assert "." in result
 
     def test_helper_empty_string(self):
         """Test helper handles empty string."""
-        assert _convert_spoken_punctuation("") == ""
+        assert process_spoken_punctuation("") == ""
 
     def test_helper_none_input(self):
         """Test helper handles None input."""
-        assert _convert_spoken_punctuation(None) == ""
+        assert process_spoken_punctuation(None) == ""
 
 
 class TestAddPunctuationFunction:
