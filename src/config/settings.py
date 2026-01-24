@@ -40,6 +40,8 @@ class Settings:
             "widget_position": None,  # None = top-right
             "widget_size": DEFAULT_WIDGET_SIZE,
             "first_run": True,
+            "custom_vocabulary": [],
+            "vocabulary_enabled": False,
         }
 
     def _load(self) -> None:
@@ -170,6 +172,25 @@ class Settings:
     @first_run.setter
     def first_run(self, value: bool) -> None:
         self.set("first_run", value)
+
+    @property
+    def custom_vocabulary(self) -> list[str]:
+        """Get custom vocabulary list."""
+        vocab = self._settings.get("custom_vocabulary", [])
+        return vocab if isinstance(vocab, list) else []
+
+    @custom_vocabulary.setter
+    def custom_vocabulary(self, value: list[str]) -> None:
+        self.set("custom_vocabulary", value)
+
+    @property
+    def vocabulary_enabled(self) -> bool:
+        """Get vocabulary enhancement enabled setting."""
+        return self._settings.get("vocabulary_enabled", False)
+
+    @vocabulary_enabled.setter
+    def vocabulary_enabled(self, value: bool) -> None:
+        self.set("vocabulary_enabled", value)
 
 
 # Global settings instance
