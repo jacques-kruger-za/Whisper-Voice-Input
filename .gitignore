@@ -1,5 +1,10 @@
 # Claude Code
 .claude/
+.claude_settings.json
+
+# Auto Claude (task management)
+.auto-claude/
+.auto-claude-*
 
 # Virtual environment
 venv/
@@ -56,3 +61,13 @@ models/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Auto Claude data directory
+.auto-claude/
+
+# Auto Claude generated files
+.auto-claude-security.json
+.auto-claude-status
+.worktrees/
+.security-key
+logs/security/
