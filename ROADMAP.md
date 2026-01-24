@@ -37,10 +37,16 @@ Code quality improvements from review:
 - [ ] **First-run onboarding** - Welcome dialog with hotkey instructions
 - [ ] **Clipboard preservation** - Save/restore user clipboard during paste
 - [ ] **Success feedback** - Visual confirmation after paste
+- [ ] **Smart error messages** - Detect and display actionable errors:
+  - "Check microphone" when audio is silent/garbled
+  - "Model not responding" for transcription timeouts
+  - Fade in/out near widget when visible
+  - Toast notification (bottom-right) when widget is hidden
+- [ ] **Error log in tray menu** - Right-click system tray to view recent errors/logs
 
 ### Medium Priority
 
-- [ ] **Error messages** - Actionable suggestions for common issues
+- [ ] **Audio quality detection** - Warn user about mic permission issues or poor audio levels
 - [ ] **Hotkey hints** - Display current shortcut in tooltip
 - [ ] **Audio device auto-select** - Pick best microphone automatically
 
