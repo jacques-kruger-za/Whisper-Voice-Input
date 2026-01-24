@@ -28,3 +28,4 @@ pynput>=1.7.6
 
 # Utilities
 platformdirs>=4.0.0
+rapidfuzz>=3.0.0
