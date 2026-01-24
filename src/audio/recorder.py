@@ -3,7 +3,7 @@
 import tempfile
 import threading
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 import sounddevice as sd
@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 class AudioRecorder:
     """Record audio from microphone."""
 
-    def __init__(self, device: str | None = None):
+    def __init__(self, device: str | None = None) -> None:
         self._device = device
         self._recording = False
         self._audio_data: list[np.ndarray] = []
@@ -36,7 +36,7 @@ class AudioRecorder:
         self._level_callback = callback
 
     @staticmethod
-    def get_devices() -> list[dict]:
+    def get_devices() -> list[dict[str, Any]]:
         """Get list of available audio input devices."""
         devices = []
         for i, dev in enumerate(sd.query_devices()):
@@ -53,7 +53,7 @@ class AudioRecorder:
         self,
         indata: np.ndarray,
         frames: int,
-        time_info: dict,
+        time_info: dict[str, Any],
         status: sd.CallbackFlags,
     ) -> None:
         """Callback for audio stream."""
