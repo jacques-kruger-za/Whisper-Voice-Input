@@ -4,11 +4,59 @@ import re
 from ..config.constants import FILLER_WORDS
 
 
+# Mapping of spoken punctuation words to symbols
+SPOKEN_PUNCTUATION = {
+    "period": ".",
+    "comma": ",",
+    "question mark": "?",
+    "exclamation mark": "!",
+    "exclamation point": "!",
+    "colon": ":",
+    "semicolon": ";",
+    "apostrophe": "'",
+    "quote": '"',
+    "dash": "-",
+    "hyphen": "-",
+}
+
+
+def _convert_spoken_punctuation(text: str) -> str:
+    """
+    Convert spoken punctuation words to actual punctuation symbols.
+
+    Replaces words like "period", "comma", "question mark" with their
+    corresponding punctuation symbols (., , ?). Case-insensitive matching.
+
+    Args:
+        text: Text that may contain spoken punctuation words.
+
+    Returns:
+        Text with spoken punctuation replaced by symbols.
+
+    Example:
+        >>> _convert_spoken_uation("hello period how are you")
+        'hello. how are you'
+    """
+    if not text:
+        return ""
+
+    result = text
+
+    # Replace each spoken punctuation word with its symbol
+    for spoken, symbol in SPOKEN_PUNCTUATION.items():
+        # Match word at word boundaries (case-insensitive)
+        pattern = rf"\b{re.escape(spoken)}\b"
+        result = re.sub(pattern, symbol, result, flags=re.IGNORECASE)
+
+    return result
+
+
 def cleanup_text(text: str) -> str:
     """
     Clean up transcribed text by removing filler words and normalizing formatting.
 
     Performs the following cleanup operations:
+    - Converts spoken punctuation (e.g., "period", "comma") to symbols
     - Removes filler words (um, uh, like, etc.) defined in FILLER_WORDS
     - Normalizes whitespace (collapses multiple spaces, trims)
     - Fixes punctuation spacing (removes space before, ensures space after)
@@ -31,6 +79,9 @@ def cleanup_text(text: str) -> str:
         return ""
 
     result = text
+
+    # Convert spoken punctuation to symbols (before filler word removal)
+    result = _convert_spoken_punctuation(result)
 
     # Remove filler words (case-insensitive, word boundaries)
     for filler in FILLER_WORDS:
