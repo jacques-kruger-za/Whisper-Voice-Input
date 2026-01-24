@@ -6,12 +6,26 @@ from ..config.constants import FILLER_WORDS
 
 def cleanup_text(text: str) -> str:
     """
-    Clean up transcribed text.
+    Clean up transcribed text by removing filler words and normalizing formatting.
 
-    - Remove filler words (um, uh, like, etc.)
-    - Fix capitalization
-    - Clean up punctuation
-    - Normalize whitespace
+    Performs the following cleanup operations:
+    - Removes filler words (um, uh, like, etc.) defined in FILLER_WORDS
+    - Normalizes whitespace (collapses multiple spaces, trims)
+    - Fixes punctuation spacing (removes space before, ensures space after)
+    - Capitalizes first letter and letters after sentence-ending punctuation
+    - Removes duplicate punctuation and orphan punctuation at start
+
+    Args:
+        text: Raw transcribed text from speech recognition engine.
+            May contain filler words, inconsistent spacing, or formatting issues.
+
+    Returns:
+        Cleaned text with proper capitalization, spacing, and punctuation.
+        Returns empty string if input is empty or None-like.
+
+    Example:
+        >>> cleanup_text("um, hello  there ,  how are you")
+        'Hello there, how are you'
     """
     if not text:
         return ""
@@ -58,9 +72,25 @@ def cleanup_text(text: str) -> str:
 
 def add_punctuation(text: str) -> str:
     """
-    Add basic punctuation if missing.
+    Add ending punctuation to text if missing.
 
-    This is a simple heuristic - Whisper usually handles punctuation well.
+    A simple heuristic that adds a period at the end of text if no
+    sentence-ending punctuation (., !, ?) is present. Whisper usually
+    handles punctuation well, so this is primarily a safety fallback.
+
+    Args:
+        text: Text that may be missing ending punctuation.
+            Whitespace is trimmed before checking.
+
+    Returns:
+        Text with guaranteed ending punctuation (period added if missing).
+        Returns empty string if input is empty or None-like.
+
+    Example:
+        >>> add_punctuation("Hello world")
+        'Hello world.'
+        >>> add_punctuation("Hello world!")
+        'Hello world!'
     """
     if not text:
         return ""
