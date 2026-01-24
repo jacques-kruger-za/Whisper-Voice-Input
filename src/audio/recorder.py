@@ -10,6 +10,9 @@ import sounddevice as sd
 from scipy.io import wavfile
 
 from ..config.constants import SAMPLE_RATE, CHANNELS
+from ..config.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class AudioRecorder:
@@ -25,6 +28,7 @@ class AudioRecorder:
 
     def set_device(self, device: str | None) -> None:
         """Set the audio input device."""
+        logger.debug("Setting audio device to: %s", device)
         self._device = device
 
     def set_level_callback(self, callback: Callable[[float], None]) -> None:
@@ -54,7 +58,7 @@ class AudioRecorder:
     ) -> None:
         """Callback for audio stream."""
         if status:
-            print(f"Audio status: {status}")
+            logger.warning("Audio stream status: %s", status)
 
         with self._lock:
             if self._recording:
@@ -69,8 +73,10 @@ class AudioRecorder:
 
     def start(self) -> None:
         """Start recording audio."""
+        logger.debug("Starting audio recording")
         with self._lock:
             if self._recording:
+                logger.debug("Already recording, ignoring start request")
                 return
 
             self._audio_data = []
@@ -82,7 +88,10 @@ class AudioRecorder:
             for dev in self.get_devices():
                 if dev["name"] == self._device:
                     device_id = dev["id"]
+                    logger.debug("Found device '%s' with id %d", self._device, device_id)
                     break
+            if device_id is None:
+                logger.warning("Requested device '%s' not found, using default", self._device)
 
         self._stream = sd.InputStream(
             device=device_id,
@@ -92,11 +101,15 @@ class AudioRecorder:
             callback=self._audio_callback,
         )
         self._stream.start()
+        logger.info("Audio recording started (device=%s, rate=%d, channels=%d)",
+                    device_id or "default", SAMPLE_RATE, CHANNELS)
 
     def stop(self) -> Path | None:
         """Stop recording and return path to audio file."""
+        logger.debug("Stopping audio recording")
         with self._lock:
             if not self._recording:
+                logger.debug("Not recording, nothing to stop")
                 return None
             self._recording = False
 
@@ -104,13 +117,16 @@ class AudioRecorder:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+            logger.debug("Audio stream closed")
 
         with self._lock:
             if not self._audio_data:
+                logger.warning("No audio data captured")
                 return None
 
             # Concatenate all audio chunks
             audio = np.concatenate(self._audio_data, axis=0)
+            chunk_count = len(self._audio_data)
             self._audio_data = []
 
         # Save to temporary WAV file
@@ -124,6 +140,10 @@ class AudioRecorder:
         audio_int16 = (audio * 32767).astype(np.int16)
         wavfile.write(temp_path, SAMPLE_RATE, audio_int16)
 
+        duration = len(audio) / SAMPLE_RATE
+        logger.info("Audio recording stopped: %d chunks, %.2f seconds, saved to %s",
+                    chunk_count, duration, temp_path)
+
         return temp_path
 
     def is_recording(self) -> bool:
@@ -133,6 +153,7 @@ class AudioRecorder:
 
     def cancel(self) -> None:
         """Cancel recording without saving."""
+        logger.debug("Cancelling audio recording")
         with self._lock:
             self._recording = False
             self._audio_data = []
@@ -141,3 +162,4 @@ class AudioRecorder:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+            logger.info("Audio recording cancelled")
