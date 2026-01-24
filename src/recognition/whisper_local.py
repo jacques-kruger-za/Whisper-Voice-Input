@@ -5,9 +5,12 @@ from typing import TYPE_CHECKING
 
 from .base import BaseRecognizer, RecognitionResult
 from ..config.constants import DEFAULT_MODEL
+from ..config.logging_config import get_logger
 
 if TYPE_CHECKING:
     from faster_whisper import WhisperModel
+
+logger = get_logger(__name__)
 
 
 class LocalWhisperRecognizer(BaseRecognizer):
@@ -24,9 +27,11 @@ class LocalWhisperRecognizer(BaseRecognizer):
             return True
 
         if self._loading:
+            logger.debug("Model loading already in progress")
             return False
 
         self._loading = True
+        logger.info("Loading Whisper model '%s'...", self._model_name)
         try:
             from faster_whisper import WhisperModel
 
@@ -37,9 +42,10 @@ class LocalWhisperRecognizer(BaseRecognizer):
                 device="auto",  # Will use CUDA if available
                 compute_type="auto",  # Will pick best for device
             )
+            logger.info("Whisper model '%s' loaded successfully", self._model_name)
             return True
         except Exception as e:
-            print(f"Failed to load Whisper model: {e}")
+            logger.error("Failed to load Whisper model '%s': %s", self._model_name, e)
             return False
         finally:
             self._loading = False
@@ -47,12 +53,16 @@ class LocalWhisperRecognizer(BaseRecognizer):
     def set_model(self, model_name: str) -> None:
         """Change the model (will reload on next transcription)."""
         if model_name != self._model_name:
+            logger.info("Changing Whisper model from '%s' to '%s'", self._model_name, model_name)
             self._model_name = model_name
             self._model = None
 
     def transcribe(self, audio_path: Path, language: str | None = None) -> RecognitionResult:
         """Transcribe audio file using Faster-Whisper."""
+        logger.debug("Starting transcription of '%s' (language=%s)", audio_path, language)
+
         if not self._load_model():
+            logger.error("Transcription failed: model not available")
             return RecognitionResult(
                 text="",
                 error="Failed to load Whisper model. Please check your installation.",
@@ -64,6 +74,8 @@ class LocalWhisperRecognizer(BaseRecognizer):
             if language and language != "en":
                 # Strip region suffix for Whisper (en-US -> en)
                 lang = language.split("-")[0] if "-" in language else language
+
+            logger.debug("Calling Whisper transcribe with language=%s", lang)
 
             # Transcribe
             segments, info = self._model.transcribe(
@@ -83,6 +95,10 @@ class LocalWhisperRecognizer(BaseRecognizer):
 
             full_text = " ".join(text_parts).strip()
 
+            logger.info("Transcription complete: %d segments, detected_language=%s, confidence=%.2f",
+                        len(text_parts), info.language, info.language_probability)
+            logger.debug("Transcribed text: %s", full_text[:100] + "..." if len(full_text) > 100 else full_text)
+
             return RecognitionResult(
                 text=full_text,
                 language=info.language,
@@ -90,6 +106,7 @@ class LocalWhisperRecognizer(BaseRecognizer):
             )
 
         except Exception as e:
+            logger.error("Transcription error: %s", e)
             return RecognitionResult(text="", error=str(e))
 
     def is_available(self) -> bool:
@@ -106,4 +123,6 @@ class LocalWhisperRecognizer(BaseRecognizer):
 
     def unload_model(self) -> None:
         """Unload the model to free memory."""
+        if self._model is not None:
+            logger.info("Unloading Whisper model '%s'", self._model_name)
         self._model = None
