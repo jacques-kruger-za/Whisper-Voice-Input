@@ -2,6 +2,9 @@
 
 import re
 from ..config.constants import PUNCTUATION_WORDS
+from ..config import get_logger
+
+logger = get_logger(__name__)
 
 
 def process_spoken_punctuation(text: str) -> str:
@@ -37,7 +40,10 @@ def process_spoken_punctuation(text: str) -> str:
     if not text:
         return ""
 
+    logger.debug(f"Processing spoken punctuation in: {text[:50]!r}...")
+
     result = text
+    replacements_made = 0
 
     # Sort punctuation words by length (longest first) to handle multi-word
     # terms like "question mark" before single words like "mark"
@@ -52,7 +58,11 @@ def process_spoken_punctuation(text: str) -> str:
         # Match punctuation word at word boundaries (case-insensitive)
         # Pattern matches the word with optional surrounding spaces
         pattern = rf"\b{re.escape(word)}\b"
-        result = re.sub(pattern, symbol, result, flags=re.IGNORECASE)
+        new_result = re.sub(pattern, symbol, result, flags=re.IGNORECASE)
+        if new_result != result:
+            replacements_made += 1
+            logger.debug(f"Replaced '{word}' with '{symbol}'")
+        result = new_result
 
     # Clean up spaces before punctuation
     result = re.sub(r"\s+([.,!?;:—])", r"\1", result)
@@ -65,5 +75,10 @@ def process_spoken_punctuation(text: str) -> str:
 
     # Remove leading/trailing spaces
     result = result.strip()
+
+    if replacements_made > 0:
+        logger.debug(
+            f"Punctuation processing complete: {replacements_made} replacements made"
+        )
 
     return result

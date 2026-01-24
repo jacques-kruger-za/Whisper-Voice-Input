@@ -1,8 +1,11 @@
 """Voice command detection and classification."""
 
-from difflib import SequenceMatcher
+from rapidfuzz import fuzz
 
 from src.config.constants import COMMAND_DEFINITIONS, COMMAND_THRESHOLD
+from ..config import get_logger
+
+logger = get_logger(__name__)
 
 
 class CommandResult:
@@ -53,7 +56,10 @@ def classify_transcription(
     # Normalize input text
     normalized_text = text.strip().lower()
 
+    logger.debug(f"Classifying transcription: {text!r} (normalized: {normalized_text!r})")
+
     if not normalized_text:
+        logger.debug("Empty text, classifying as dictation")
         return ("dictation", None)
 
     # Check each defined command
@@ -61,15 +67,8 @@ def classify_transcription(
     best_score = 0.0
 
     for command_phrase, command_info in COMMAND_DEFINITIONS.items():
-        # Calculate similarity score (0.0 to 1.0)
-        similarity = SequenceMatcher(
-            None,
-            normalized_text,
-            command_phrase.lower()
-        ).ratio()
-
-        # Convert to 0-100 scale
-        score = similarity * 100
+        # Calculate similarity score using RapidFuzz (0-100 scale)
+        score = fuzz.ratio(normalized_text, command_phrase.lower())
 
         if score > best_score:
             best_score = score
@@ -78,6 +77,10 @@ def classify_transcription(
     # Check if best match exceeds threshold
     if best_match and best_score >= threshold:
         command_phrase, command_info = best_match
+        logger.info(
+            f"Command detected: {command_phrase!r} "
+            f"(confidence={best_score:.0f}, threshold={threshold})"
+        )
         result = CommandResult(
             command_phrase=command_phrase,
             action=command_info["action"],
@@ -86,4 +89,7 @@ def classify_transcription(
         )
         return ("command", result)
 
+    logger.debug(
+        f"No command match (best_score={best_score:.0f}, threshold={threshold})"
+    )
     return ("dictation", None)

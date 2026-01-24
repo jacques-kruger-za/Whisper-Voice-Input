@@ -111,6 +111,9 @@ PUNCTUATION_WORDS = {
     "colon": ":",
     "semicolon": ";",
     "dash": "—",
+    "apostrophe": "'",
+    "quote": '"',
+    "hyphen": "-",
 }
 
 # Command detection threshold (fuzzy matching score 0-100)

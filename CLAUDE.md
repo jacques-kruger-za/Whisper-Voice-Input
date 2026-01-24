@@ -31,7 +31,11 @@ src/
 │   ├── base.py          # Abstract recognizer interface
 │   ├── whisper_local.py # Faster-Whisper (offline) with progress logging
 │   ├── whisper_api.py   # OpenAI Whisper API with error logging
-│   └── cleanup.py       # Text post-processing
+│   ├── cleanup.py       # Text post-processing with spoken punctuation
+│   ├── commands.py      # [NEW] Voice command detection and classification
+│   ├── command_processor.py # [NEW] Command execution and history tracking
+│   ├── spoken_punctuation.py # [NEW] Punctuation word-to-symbol conversion
+│   └── vocabulary.py    # [NEW] Custom vocabulary management
 ├── input/               # User input handling
 │   ├── hotkey.py        # Global hotkey manager with debug logging
 │   └── injector.py      # Clipboard text injection with error logging
@@ -52,6 +56,10 @@ src/
 | Change colors/theme | `src/ui/styles.py` |
 | Add new recognition engine | `src/recognition/` (extend BaseRecognizer) |
 | Modify text cleanup | `src/recognition/cleanup.py` |
+| Add voice commands | `src/config/constants.py` (COMMAND_DEFINITIONS) |
+| Manage custom vocabulary | Settings UI → Commands & Vocabulary tab |
+| Modify command threshold | `src/config/constants.py` (COMMAND_THRESHOLD) |
+| Add spoken punctuation | `src/config/constants.py` (PUNCTUATION_WORDS) |
 | Configure logging | `src/config/logging_config.py` (log level, format, handlers) |
 | Change log location | `src/config/logging_config.py` (uses platformdirs) |
 
@@ -72,11 +80,62 @@ The app uses four states defined in `constants.py`:
 
 Use Qt signals (`pyqtSignal`) for cross-thread UI updates.
 
+## Voice Commands System
+
+The app supports voice commands for text editing operations:
+
+- **delete that** - Remove the last dictated text segment
+- **undo** - Reverse the last action (up to 10 history items)
+- **new line** - Insert line break at cursor position
+
+### Spoken Punctuation
+
+Say punctuation words to insert symbols:
+- "period" → `.`
+- "comma" → `,`
+- "question mark" → `?`
+- "exclamation mark" or "exclamation point" → `!`
+- "colon" → `:`
+- "semicolon" → `;`
+- "dash" → `—`
+- "apostrophe" → `'`
+- "quote" → `"`
+- "hyphen" → `-`
+
+### Custom Vocabulary
+
+Add technical terms or proper nouns to improve recognition accuracy:
+1. Open Settings → Commands & Vocabulary tab
+2. Click "Add" and enter word (max 100 characters)
+3. Words are saved to vocabulary.json in user data directory
+4. Vocabulary is passed to Whisper as initial_prompt (224 character limit)
+
+### Command Recognition
+
+Commands are detected using fuzzy matching (RapidFuzz) with configurable threshold:
+- **Default threshold**: 80 (0-100 scale)
+- **Adjustable range**: 70-90 via Settings → Commands & Vocabulary
+- Lower threshold = more fuzzy matches (may cause false positives)
+- Higher threshold = stricter matching (may miss commands with typos)
+
+Command classification happens after transcription:
+1. Audio → Whisper transcription
+2. Text cleanup (punctuation, filler removal)
+3. Fuzzy matching against COMMAND_DEFINITIONS
+4. If score ≥ threshold: Execute command
+5. If score < threshold: Inject as dictation text
+
 ## Settings Storage
 
 Location: `%AppData%/Whisper Voice Input/settings.json`
 
 Managed by `Settings` class in `src/config/settings.py` with auto-save on property changes.
+
+Custom vocabulary is stored separately:
+- **Location**: `%LOCALAPPDATA%/Whisper Voice Input/vocabulary.json`
+- **Format**: JSON array of strings
+- **Max word length**: 100 characters
+- **Duplicate handling**: Case-insensitive duplicate detection
 
 ## Logging Configuration
 
@@ -191,6 +250,19 @@ pyinstaller "Whisper Voice Input.spec" --noconfirm
 ### Viewing logs
 1. Check `%LOCALAPPDATA%/Whisper Voice Input/Logs/app.log`
 2. Console output also shows logs when running via `python -m src.main`
+
+### Adding a voice command
+1. Add to `COMMAND_DEFINITIONS` in `src/config/constants.py`
+2. Implement action handler in `src/recognition/command_processor.py`
+3. Add tests in `tests/test_command_processor.py`
+
+### Changing command threshold
+1. Modify `COMMAND_THRESHOLD` in `src/config/constants.py` (default: 80)
+2. Or adjust via Settings → Commands & Vocabulary → Command Threshold slider (70-90)
+
+### Adding spoken punctuation
+1. Add to `PUNCTUATION_WORDS` dict in `src/config/constants.py`
+2. Spoken punctuation is automatically processed in cleanup pipeline
 
 ## Dependencies
 
