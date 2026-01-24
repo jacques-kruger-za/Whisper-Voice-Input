@@ -6,6 +6,10 @@ from typing import Callable
 from pynput import keyboard
 from pynput.keyboard import Key, KeyCode
 
+from ..config.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 class HotkeyManager:
     """Manage global hotkeys."""
@@ -79,8 +83,10 @@ class HotkeyManager:
         with self._lock:
             normalized = self._normalize_key(key)
             self._pressed_keys.add(normalized)
+            logger.debug("Key pressed: %s (pressed_keys=%s)", normalized, self._pressed_keys)
 
             if self._check_hotkey() and self._callback:
+                logger.debug("Hotkey triggered, invoking callback")
                 # Call callback in separate thread to avoid blocking
                 threading.Thread(target=self._callback, daemon=True).start()
 
@@ -89,6 +95,7 @@ class HotkeyManager:
         with self._lock:
             normalized = self._normalize_key(key)
             self._pressed_keys.discard(normalized)
+            logger.debug("Key released: %s (pressed_keys=%s)", normalized, self._pressed_keys)
 
     def set_hotkey(self, hotkey: dict) -> None:
         """
@@ -99,6 +106,7 @@ class HotkeyManager:
         """
         with self._lock:
             self._hotkey = hotkey.copy()
+            logger.debug("Hotkey configured: %s", hotkey)
 
     def set_callback(self, callback: Callable[[], None]) -> None:
         """Set the callback function for when hotkey is pressed."""
@@ -107,6 +115,7 @@ class HotkeyManager:
     def start(self) -> None:
         """Start listening for hotkeys."""
         if self._listener is not None:
+            logger.debug("Hotkey listener already running")
             return
 
         self._listener = keyboard.Listener(
@@ -114,12 +123,14 @@ class HotkeyManager:
             on_release=self._on_release,
         )
         self._listener.start()
+        logger.info("Hotkey listener started")
 
     def stop(self) -> None:
         """Stop listening for hotkeys."""
         if self._listener:
             self._listener.stop()
             self._listener = None
+            logger.info("Hotkey listener stopped")
         with self._lock:
             self._pressed_keys.clear()
 
@@ -150,9 +161,13 @@ class HotkeyCapture:
                 self._pressed.add("alt")
             else:
                 self._main_key = name
+            logger.debug("Capture key pressed: %s (modifiers=%s, main=%s)",
+                        name, self._pressed, self._main_key)
         elif isinstance(key, KeyCode):
             if key.char:
                 self._main_key = key.char.lower()
+                logger.debug("Capture key pressed: %s (modifiers=%s, main=%s)",
+                            key.char, self._pressed, self._main_key)
 
     def _on_release(self, key) -> bool:
         """Capture hotkey on release of main key."""
@@ -163,6 +178,7 @@ class HotkeyCapture:
                 "alt": "alt" in self._pressed,
                 "key": self._main_key,
             }
+            logger.debug("Hotkey captured: %s", self._result)
             if self._callback:
                 self._callback(self._result)
             return False  # Stop listener
@@ -175,6 +191,7 @@ class HotkeyCapture:
         Args:
             callback: Called with hotkey dict when captured
         """
+        logger.debug("Starting hotkey capture")
         self._callback = callback
         self._pressed = set()
         self._main_key = None
@@ -191,6 +208,7 @@ class HotkeyCapture:
         if self._listener:
             self._listener.stop()
             self._listener = None
+            logger.debug("Hotkey capture cancelled")
 
 
 def hotkey_to_string(hotkey: dict) -> str:
