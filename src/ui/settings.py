@@ -15,6 +15,10 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QFrame,
     QMessageBox,
+    QTabWidget,
+    QListWidget,
+    QSlider,
+    QInputDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -46,44 +50,23 @@ class SettingsWindow(QDialog):
     def _setup_ui(self) -> None:
         """Initialize the settings UI."""
         self.setWindowTitle(f"{APP_NAME} Settings")
-        self.setMinimumSize(450, 500)
+        self.setMinimumSize(500, 550)
         self.setStyleSheet(SETTINGS_STYLE)
 
-        # Main layout with scroll area
+        # Main layout
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # Tab widget
+        tabs = QTabWidget()
 
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        # General settings tab
+        tabs.addTab(self._create_general_tab(), "General")
 
-        # Hotkey section
-        layout.addWidget(self._create_hotkey_section())
+        # Commands & Vocabulary tab
+        tabs.addTab(self._create_commands_tab(), "Commands && Vocabulary")
 
-        # Audio section
-        layout.addWidget(self._create_audio_section())
-
-        # Appearance section
-        layout.addWidget(self._create_appearance_section())
-
-        # Recognition section
-        layout.addWidget(self._create_recognition_section())
-
-        # Startup section
-        layout.addWidget(self._create_startup_section())
-
-        # About section
-        layout.addWidget(self._create_about_section())
-
-        layout.addStretch()
-
-        scroll.setWidget(content)
-        main_layout.addWidget(scroll)
+        main_layout.addWidget(tabs)
 
         # Buttons
         button_layout = QHBoxLayout()
@@ -223,6 +206,131 @@ class SettingsWindow(QDialog):
 
         return group
 
+    def _create_general_tab(self) -> QWidget:
+        """Create general settings tab."""
+        widget = QWidget()
+        main_layout = QVBoxLayout(widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+
+        # Hotkey section
+        layout.addWidget(self._create_hotkey_section())
+
+        # Audio section
+        layout.addWidget(self._create_audio_section())
+
+        # Appearance section
+        layout.addWidget(self._create_appearance_section())
+
+        # Recognition section
+        layout.addWidget(self._create_recognition_section())
+
+        # Startup section
+        layout.addWidget(self._create_startup_section())
+
+        # About section
+        layout.addWidget(self._create_about_section())
+
+        layout.addStretch()
+
+        scroll.setWidget(content)
+        main_layout.addWidget(scroll)
+
+        return widget
+
+    def _create_commands_tab(self) -> QWidget:
+        """Create commands & vocabulary tab."""
+        widget = QWidget()
+        main_layout = QVBoxLayout(widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+
+        # Custom vocabulary section
+        vocab_group = QGroupBox("Custom Vocabulary")
+        vocab_layout = QVBoxLayout(vocab_group)
+
+        vocab_desc = QLabel("Add custom words or technical terms to improve recognition accuracy.")
+        vocab_desc.setWordWrap(True)
+        vocab_desc.setStyleSheet("color: #888888;")
+        vocab_layout.addWidget(vocab_desc)
+
+        # Vocabulary list with buttons
+        list_layout = QHBoxLayout()
+
+        self._vocabulary_list = QListWidget()
+        self._vocabulary_list.setMinimumHeight(150)
+        list_layout.addWidget(self._vocabulary_list)
+
+        # Buttons for list management
+        button_layout = QVBoxLayout()
+        self._add_vocab_btn = QPushButton("Add")
+        self._add_vocab_btn.clicked.connect(self._add_vocabulary_word)
+        button_layout.addWidget(self._add_vocab_btn)
+
+        self._remove_vocab_btn = QPushButton("Remove")
+        self._remove_vocab_btn.clicked.connect(self._remove_vocabulary_word)
+        button_layout.addWidget(self._remove_vocab_btn)
+
+        button_layout.addStretch()
+        list_layout.addLayout(button_layout)
+
+        vocab_layout.addLayout(list_layout)
+        layout.addWidget(vocab_group)
+
+        # Command threshold section
+        threshold_group = QGroupBox("Command Recognition")
+        threshold_layout = QFormLayout(threshold_group)
+
+        # Threshold slider
+        slider_layout = QVBoxLayout()
+
+        slider_container = QHBoxLayout()
+        self._threshold_slider = QSlider(Qt.Orientation.Horizontal)
+        self._threshold_slider.setMinimum(70)
+        self._threshold_slider.setMaximum(90)
+        self._threshold_slider.setValue(80)
+        self._threshold_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._threshold_slider.setTickInterval(5)
+        self._threshold_slider.valueChanged.connect(self._on_threshold_changed)
+        slider_container.addWidget(self._threshold_slider)
+
+        self._threshold_value_label = QLabel("80")
+        self._threshold_value_label.setMinimumWidth(30)
+        slider_container.addWidget(self._threshold_value_label)
+
+        slider_layout.addLayout(slider_container)
+
+        threshold_desc = QLabel("Higher values require closer matches to recognize commands (70-90).")
+        threshold_desc.setWordWrap(True)
+        threshold_desc.setStyleSheet("color: #888888; font-size: 10px;")
+        slider_layout.addWidget(threshold_desc)
+
+        threshold_layout.addRow("Command Threshold:", slider_layout)
+        layout.addWidget(threshold_group)
+
+        layout.addStretch()
+
+        scroll.setWidget(content)
+        main_layout.addWidget(scroll)
+
+        return widget
+
     def _load_settings(self) -> None:
         """Load current settings into UI."""
         # Hotkey
@@ -272,6 +380,16 @@ class SettingsWindow(QDialog):
                 self._widget_size_combo.setCurrentIndex(i)
                 break
 
+        # Custom vocabulary
+        vocabulary = getattr(self._settings, 'custom_vocabulary', [])
+        self._vocabulary_list.clear()
+        for word in vocabulary:
+            self._vocabulary_list.addItem(word)
+
+        # Command threshold
+        threshold = getattr(self._settings, 'command_threshold', 80)
+        self._threshold_slider.setValue(int(threshold))
+
         # Update UI state
         self._on_engine_changed()
 
@@ -283,6 +401,37 @@ class SettingsWindow(QDialog):
         # Show/hide relevant options
         self._model_combo.setEnabled(is_local)
         self._api_key_edit.setEnabled(not is_local)
+
+    def _on_threshold_changed(self, value: int) -> None:
+        """Handle threshold slider change."""
+        self._threshold_value_label.setText(str(value))
+
+    def _add_vocabulary_word(self) -> None:
+        """Add a new word to custom vocabulary."""
+        word, ok = QInputDialog.getText(
+            self,
+            "Add Vocabulary Word",
+            "Enter a word or phrase:",
+        )
+
+        if ok and word.strip():
+            word = word.strip()
+            # Check for duplicates
+            items = [self._vocabulary_list.item(i).text() for i in range(self._vocabulary_list.count())]
+            if word not in items:
+                self._vocabulary_list.addItem(word)
+            else:
+                QMessageBox.information(
+                    self,
+                    "Duplicate Word",
+                    f"'{word}' is already in the vocabulary list.",
+                )
+
+    def _remove_vocabulary_word(self) -> None:
+        """Remove selected word from custom vocabulary."""
+        current_item = self._vocabulary_list.currentItem()
+        if current_item:
+            self._vocabulary_list.takeItem(self._vocabulary_list.row(current_item))
 
     def _capture_hotkey(self) -> None:
         """Start capturing a new hotkey."""
@@ -323,6 +472,16 @@ class SettingsWindow(QDialog):
         old_widget_size = self._settings.widget_size
         new_widget_size = self._widget_size_combo.currentData()
         self._settings.widget_size = new_widget_size
+
+        # Custom vocabulary
+        vocabulary = [self._vocabulary_list.item(i).text() for i in range(self._vocabulary_list.count())]
+        if hasattr(self._settings, 'custom_vocabulary'):
+            self._settings.custom_vocabulary = vocabulary
+
+        # Command threshold
+        threshold = self._threshold_slider.value()
+        if hasattr(self._settings, 'command_threshold'):
+            self._settings.command_threshold = threshold
 
         # Handle autostart
         self._update_autostart()
