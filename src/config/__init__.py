@@ -1,6 +1,7 @@
 """Configuration module."""
 
 from .settings import Settings, get_settings
+from .logging_config import get_logger, configure_logging, LoggingConfig
 from .constants import (
     APP_NAME,
     APP_VERSION,
@@ -24,6 +25,9 @@ from .constants import (
 __all__ = [
     "Settings",
     "get_settings",
+    "get_logger",
+    "configure_logging",
+    "LoggingConfig",
     "APP_NAME",
     "APP_VERSION",
     "STATE_IDLE",
