@@ -2,53 +2,7 @@
 
 import re
 from ..config.constants import FILLER_WORDS
-
-
-# Mapping of spoken punctuation words to symbols
-SPOKEN_PUNCTUATION = {
-    "period": ".",
-    "comma": ",",
-    "question mark": "?",
-    "exclamation mark": "!",
-    "exclamation point": "!",
-    "colon": ":",
-    "semicolon": ";",
-    "apostrophe": "'",
-    "quote": '"',
-    "dash": "-",
-    "hyphen": "-",
-}
-
-
-def _convert_spoken_punctuation(text: str) -> str:
-    """
-    Convert spoken punctuation words to actual punctuation symbols.
-
-    Replaces words like "period", "comma", "question mark" with their
-    corresponding punctuation symbols (., , ?). Case-insensitive matching.
-
-    Args:
-        text: Text that may contain spoken punctuation words.
-
-    Returns:
-        Text with spoken punctuation replaced by symbols.
-
-    Example:
-        >>> _convert_spoken_uation("hello period how are you")
-        'hello. how are you'
-    """
-    if not text:
-        return ""
-
-    result = text
-
-    # Replace each spoken punctuation word with its symbol
-    for spoken, symbol in SPOKEN_PUNCTUATION.items():
-        # Match word at word boundaries (case-insensitive)
-        pattern = rf"\b{re.escape(spoken)}\b"
-        result = re.sub(pattern, symbol, result, flags=re.IGNORECASE)
-
-    return result
+from .spoken_punctuation import process_spoken_punctuation
 
 
 def cleanup_text(text: str) -> str:
@@ -81,7 +35,7 @@ def cleanup_text(text: str) -> str:
     result = text
 
     # Convert spoken punctuation to symbols (before filler word removal)
-    result = _convert_spoken_punctuation(result)
+    result = process_spoken_punctuation(result)
 
     # Remove filler words (case-insensitive, word boundaries)
     for filler in FILLER_WORDS:
