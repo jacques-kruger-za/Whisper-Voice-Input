@@ -12,6 +12,7 @@ from .config import ENGINE_LOCAL, ENGINE_API
 from .config.logging_config import get_logger
 from .audio import AudioRecorder, validate_audio
 from .recognition import LocalWhisperRecognizer, APIWhisperRecognizer, cleanup_text
+from .recognition import CommandProcessor, classify_transcription
 from .input import HotkeyManager, inject_text
 from .ui import FloatingWidget, TrayIcon, SettingsWindow
 
@@ -46,6 +47,8 @@ class VoiceInputApp(QObject):
         self._local_recognizer = LocalWhisperRecognizer(self._settings.model)
         logger.debug("Creating API recognizer")
         self._api_recognizer = APIWhisperRecognizer(self._settings.openai_api_key)
+        logger.debug("Creating command processor")
+        self._command_processor = CommandProcessor()
         self._hotkey_manager = HotkeyManager()
 
         # UI
@@ -153,13 +156,15 @@ class VoiceInputApp(QObject):
             logger.debug("Transcribed text: %s", text[:100] + "..." if len(text) > 100 else text)
             # Inject text
             inject_text(text)
+            # Track dictation in command processor history
+            self._command_processor.track_dictation(text)
             self.state_changed.emit(STATE_IDLE, "Done!")
             # Brief delay then return to ready
             QTimer.singleShot(1000, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
         else:
-            logger.info("Transcription complete: no speech detected")
-            self.state_changed.emit(STATE_IDLE, "No speech detected")
-            QTimer.singleShot(2000, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
+            logger.info("Transcription complete: command executed or no speech detected")
+            self.state_changed.emit(STATE_IDLE, "Done!")
+            QTimer.singleShot(1000, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
 
     def _on_error(self, message: str) -> None:
         """Handle error (UI thread)."""
@@ -254,7 +259,30 @@ class VoiceInputApp(QObject):
                 # Clean up text
                 text = cleanup_text(result.text)
                 logger.info("Transcription successful")
-                self.transcription_complete.emit(text)
+
+                # Classify as command or dictation
+                classification, command_result = classify_transcription(
+                    text,
+                    threshold=getattr(self._settings, 'command_threshold', 80)
+                )
+
+                if classification == "command" and command_result:
+                    # Execute command
+                    logger.info(
+                        "Classified as command: %s (confidence: %.0f)",
+                        command_result.command_phrase,
+                        command_result.confidence
+                    )
+                    success = self._command_processor.execute_command(command_result)
+
+                    if success:
+                        self.transcription_complete.emit("")  # Signal success with no text to inject
+                    else:
+                        self.error_occurred.emit("Command execution failed")
+                else:
+                    # Dictation - emit for text injection
+                    logger.debug("Classified as dictation")
+                    self.transcription_complete.emit(text)
             else:
                 logger.warning("Transcription failed: %s", result.error)
                 self.error_occurred.emit(result.error or "Transcription failed")
