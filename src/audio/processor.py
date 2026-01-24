@@ -6,6 +6,9 @@ import numpy as np
 from scipy.io import wavfile
 
 from ..config.constants import SAMPLE_RATE
+from ..config.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def validate_audio(audio_path: Path) -> bool:
@@ -20,7 +23,8 @@ def validate_audio(audio_path: Path) -> bool:
         if np.abs(audio).mean() < 10:  # Very low average amplitude
             return False
         return True
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to validate audio file %s: %s", audio_path, e)
         return False
 
 
@@ -29,7 +33,8 @@ def get_audio_duration(audio_path: Path) -> float:
     try:
         sample_rate, audio = wavfile.read(audio_path)
         return len(audio) / sample_rate
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to get audio duration for %s: %s", audio_path, e)
         return 0.0
 
 
@@ -52,7 +57,7 @@ def normalize_audio(audio_path: Path) -> Path:
         audio_int16 = (audio * 32767).astype(np.int16)
         wavfile.write(audio_path, sample_rate, audio_int16)
 
-    except Exception:
-        pass  # Return original on error
+    except Exception as e:
+        logger.warning("Failed to normalize audio %s, returning original: %s", audio_path, e)
 
     return audio_path
