@@ -6,7 +6,7 @@ A Windows desktop voice-to-text application using OpenAI's Whisper model for spe
 
 ## Tech Stack
 
-- **Language**: Python 3.10+
+- **Language**: Python 3.12 (required - 3.13+/3.14 not supported due to missing dependency wheels)
 - **UI Framework**: PyQt6
 - **Speech Recognition**: Faster-Whisper (local) / OpenAI API (cloud)
 - **Audio**: sounddevice + numpy/scipy
@@ -141,6 +141,23 @@ configure_logging()
 configure_logging(logging.DEBUG)
 ```
 
+## Environment Setup
+
+**Python 3.12 is required.** Python 3.13+ and 3.14 are not supported because key dependencies (`onnxruntime`, `PyQt6`, `faster-whisper`) don't have pre-built wheels for newer Python versions yet.
+
+```bash
+# Create venv with Python 3.12 specifically
+py -3.12 -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+**Windows Long Paths**: If you encounter path-related errors during `pip install`, enable Windows Long Paths:
+```powershell
+# Run in elevated PowerShell
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1
+```
+
 ## Running the App
 
 ```bash
@@ -150,9 +167,9 @@ python -m src.main
 # Without console window
 pythonw -m src.main
 
-# Build standalone exe
+# Build standalone exe (or use Build.bat)
 pip install pyinstaller
-pyinstaller --name "Whisper Voice Input" --windowed --onefile src/main.py
+pyinstaller "Whisper Voice Input.spec" --noconfirm
 ```
 
 ## Common Tasks
@@ -177,19 +194,29 @@ pyinstaller --name "Whisper Voice Input" --windowed --onefile src/main.py
 
 ## Dependencies
 
-All deps in `requirements.txt`. Key ones:
-- `faster-whisper` - Local speech recognition (downloads models from HuggingFace)
-- `openai` - Cloud API client
-- `PyQt6` - UI framework
-- `pynput` - Global hotkey capture
-- `sounddevice` - Audio recording
-- `platformdirs` - Cross-platform directory resolution (settings, logs)
+All dependencies are listed in `requirements.txt` with minimum versions. Key packages:
+
+| Package | Purpose | Notes |
+|---------|---------|-------|
+| `PyQt6>=6.6.0` | UI framework | GPL v3 license |
+| `faster-whisper>=1.0.0` | Local speech recognition | Downloads models from HuggingFace, includes Silero VAD |
+| `openai>=1.0.0` | Cloud API client | For API engine mode |
+| `sounddevice>=0.4.6` | Audio recording | Requires working microphone |
+| `numpy>=1.24.0` | Numerical computing | Audio processing |
+| `scipy>=1.11.0` | Signal processing | Audio analysis |
+| `pyperclip>=1.8.2` | Clipboard access | Text injection |
+| `pyautogui>=0.9.54` | Keyboard simulation | Paste simulation |
+| `pynput>=1.7.6` | Global hotkey capture | Background listener |
+| `platformdirs>=4.0.0` | Directory resolution | Settings/logs paths |
+
+**Note**: `faster-whisper` depends on `onnxruntime` which requires Python 3.12 (no 3.13+/3.14 wheels available).
 
 ## Notes
 
 - First run downloads Whisper model (~150MB for "base")
 - API engine requires OpenAI API key (costs money per request)
 - Local engine runs entirely offline after initial model download
+- **Silero VAD** (Voice Activity Detection) is used by faster-whisper to filter non-speech audio; bundled with faster-whisper and must be included in PyInstaller builds (see `Whisper Voice Input.spec`)
 - Widget uses 60fps animation timer for smooth visualizations
 - Text injection uses clipboard (may interfere with user's clipboard briefly)
 - Logs are written to both console and file for debugging

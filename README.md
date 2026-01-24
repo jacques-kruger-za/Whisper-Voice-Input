@@ -44,6 +44,7 @@ A Windows desktop application that converts speech to text using OpenAI's Whispe
 |--------|---------|
 | **Library** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) |
 | **Model** | OpenAI Whisper (CTranslate2 optimized) |
+| **VAD** | Silero VAD (voice activity detection for filtering silence) |
 | **Runs On** | Your CPU or GPU (auto-detected) |
 | **Internet** | Only for initial model download (~75MB-3GB) |
 | **Privacy** | Full - audio never leaves your machine |
@@ -75,8 +76,10 @@ A Windows desktop application that converts speech to text using OpenAI's Whispe
 ### Prerequisites
 
 - Windows 10/11
-- Python 3.10 or later (3.12 recommended)
+- **Python 3.12** (required - see note below)
 - Microphone
+
+> **Important**: Python 3.12 is required. Python 3.13+ and 3.14 are not yet supported due to missing pre-built wheels for dependencies like `onnxruntime` and `PyQt6`. If you have multiple Python versions installed, use `py -3.12` to ensure the correct version.
 
 ### Setup
 
@@ -84,10 +87,7 @@ A Windows desktop application that converts speech to text using OpenAI's Whispe
 # Clone or download the project
 cd Whisper-Voice-Input
 
-# Create virtual environment (recommended)
-python -m venv venv
-venv\Scripts\activate
-
+# Create virtual environment with Python 3.12
 py -3.12 -m venv venv
 venv\Scripts\activate
 
@@ -97,6 +97,19 @@ pip install -r requirements.txt
 # Run the app
 python -m src.main
 ```
+
+### Using Build.bat
+
+Alternatively, run `Build.bat` which automatically:
+1. Creates a Python 3.12 virtual environment
+2. Installs all dependencies
+3. Builds a standalone executable
+
+```bash
+Build.bat
+```
+
+Output: `dist\Whisper Voice Input.exe`
 
 ### First Run
 
@@ -142,7 +155,7 @@ Access settings via:
 | Setting | Options |
 |---------|---------|
 | Hotkey | Any key + Ctrl/Shift/Alt modifiers |
-| Widget Size | Compact (40px), Medium (60px), Large (80px) |
+| Widget Size | Compact (60px), Medium (80px), Large (100px) |
 | Engine | Local (Faster-Whisper) or API (OpenAI) |
 | Model | tiny, base, small, medium, large-v3 |
 | Language | English (Auto), US, UK, South Africa |
