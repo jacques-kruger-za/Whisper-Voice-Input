@@ -66,3 +66,34 @@ FILLER_WORDS = [
     "um", "uh", "er", "ah", "like", "you know", "i mean",
     "basically", "actually", "literally", "so", "well",
 ]
+
+# Voice command definitions
+COMMAND_DEFINITIONS = {
+    "delete that": {
+        "action": "delete_last",
+        "description": "Remove the last dictated segment"
+    },
+    "undo": {
+        "action": "undo",
+        "description": "Reverse the last command or dictation action"
+    },
+    "new line": {
+        "action": "insert_newline",
+        "description": "Insert line break at cursor position"
+    },
+}
+
+# Spoken punctuation word-to-symbol mapping
+PUNCTUATION_WORDS = {
+    "period": ".",
+    "comma": ",",
+    "question mark": "?",
+    "exclamation mark": "!",
+    "exclamation point": "!",
+    "colon": ":",
+    "semicolon": ";",
+    "dash": "—",
+}
+
+# Command detection threshold (fuzzy matching score 0-100)
+COMMAND_THRESHOLD = 80
