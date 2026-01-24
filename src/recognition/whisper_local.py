@@ -75,7 +75,50 @@ class LocalWhisperRecognizer(BaseRecognizer):
                 # Strip region suffix for Whisper (en-US -> en)
                 lang = language.split("-")[0] if "-" in language else language
 
-            logger.debug("Calling Whisper transcribe with language=%s", lang)
+            # Generate initial_prompt from custom vocabulary
+            initial_prompt = None
+            try:
+                from ..config.settings import get_settings
+                settings = get_settings()
+
+                if settings.vocabulary_enabled and settings.custom_vocabulary:
+                    prefix = "Glossary: "
+                    terms = ", ".join(settings.custom_vocabulary)
+                    prompt = prefix + terms
+
+                    # Enforce 224 character limit (faster-whisper hard limit)
+                    if len(prompt) <= 224:
+                        initial_prompt = prompt
+                        logger.debug("Using custom vocabulary with %d terms (%d chars)",
+                                   len(settings.custom_vocabulary), len(prompt))
+                    else:
+                        # Truncate terms to fit within limit
+                        truncated_terms = []
+                        current_length = len(prefix)
+
+                        for term in settings.custom_vocabulary:
+                            separator = ", " if truncated_terms else ""
+                            term_length = len(separator + term)
+
+                            if current_length + term_length <= 224:
+                                truncated_terms.append(term)
+                                current_length += term_length
+                            else:
+                                break
+
+                        if truncated_terms:
+                            initial_prompt = prefix + ", ".join(truncated_terms)
+                            logger.warning("Vocabulary truncated to %d/%d terms to fit 224 char limit",
+                                         len(truncated_terms), len(settings.custom_vocabulary))
+                        else:
+                            logger.warning("Cannot fit any vocabulary terms within 224 char limit")
+            except Exception as e:
+                logger.error("Failed to generate vocabulary prompt: %s", e)
+                # Continue without vocabulary on error
+                initial_prompt = None
+
+            logger.debug("Calling Whisper transcribe with language=%s, initial_prompt=%s",
+                        lang, "enabled" if initial_prompt else "disabled")
 
             # Transcribe
             segments, info = self._model.transcribe(
@@ -86,6 +129,7 @@ class LocalWhisperRecognizer(BaseRecognizer):
                 temperature=0.0,
                 condition_on_previous_text=True,
                 vad_filter=True,  # Filter out non-speech
+                initial_prompt=initial_prompt,  # Custom vocabulary hint
             )
 
             # Collect text from segments
