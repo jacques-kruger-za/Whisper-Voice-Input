@@ -1,11 +1,13 @@
 """Global hotkey handling using pynput."""
 
+import time
 import threading
 from typing import Callable
 
 from pynput import keyboard
 from pynput.keyboard import Key, KeyCode
 
+from ..config.constants import HOTKEY_DEBOUNCE_MS
 from ..config.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -20,6 +22,7 @@ class HotkeyManager:
         self._hotkey: dict = {}
         self._pressed_keys: set = set()
         self._lock = threading.Lock()
+        self._last_trigger_time: float = 0.0
 
     def _normalize_key(self, key) -> str:
         """Normalize key to string representation."""
@@ -86,6 +89,14 @@ class HotkeyManager:
             logger.debug("Key pressed: %s (pressed_keys=%s)", normalized, self._pressed_keys)
 
             if self._check_hotkey() and self._callback:
+                # Debounce: ignore triggers within HOTKEY_DEBOUNCE_MS of the last one
+                now = time.monotonic()
+                elapsed_ms = (now - self._last_trigger_time) * 1000
+                if elapsed_ms < HOTKEY_DEBOUNCE_MS:
+                    logger.debug("Hotkey debounced (%.0fms < %dms threshold)",
+                                elapsed_ms, HOTKEY_DEBOUNCE_MS)
+                    return
+                self._last_trigger_time = now
                 logger.debug("Hotkey triggered, invoking callback")
                 # Call callback in separate thread to avoid blocking
                 threading.Thread(target=self._callback, daemon=True).start()

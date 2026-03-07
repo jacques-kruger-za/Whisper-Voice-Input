@@ -1,32 +1,40 @@
 # Whisper Voice Input - Roadmap
 
-## Current State (v1.0.0)
+## Current State (v1.0.1) — Stability & Recovery
 
-Core functionality is complete:
+Bug-fix release focused on eliminating the app-hang / unresponsive state.
+
+### Bug Fixes
+- [x] **Hotkey debounce (500ms)** — Prevents key bounce and OS re-fire from spawning multiple callbacks, which caused recording to start and immediately stop
+- [x] **Audio stream lifecycle fix** — Leaked `sd.InputStream` objects are now closed before creating new ones; `stop()` always closes the stream even if `_recording` was already False
+- [x] **Language detection fix** — `"en"` now forces English explicitly instead of passing `None` to Whisper (which auto-detected Welsh on short audio). Only `"auto"` triggers auto-detection
+- [x] **Cancellable error recovery timer** — Replaced `QTimer.singleShot` with `startTimer`/`killTimer` so the error→idle transition doesn't collide with new user input
+- [x] **State guards in toggle_recording** — Pressing hotkey during ERROR state cancels the timer and returns to IDLE cleanly; pressing during PROCESSING is explicitly rejected
+- [x] **Transcription timeout (120s)** — Prevents indefinite hang if Whisper stalls; shows error and clears `_processing` flag
+- [x] **`_processing` flag bulletproofing** — `finally` block in `_process_audio()` ensures flag is always cleared
+
+### New Features
+- [x] **Reset State** (tray menu) — Force-clears processing flag, closes leaked audio streams, returns to idle
+- [x] **Restart App** (tray menu) — Full process restart via `os.execv`, saves widget position first
+- [x] **Afrikaans language support** — Added `"af"` to supported languages
+- [x] **Auto-detect language option** — Added `"auto"` for explicit auto-detection (not default)
+
+### Previous (v1.0.0)
+
+Core functionality:
 
 | Feature | Status |
 |---------|--------|
-| Global Hotkey (Ctrl+Alt+F4) | Done |
+| Global Hotkey (Ctrl+Shift+Space) | Done |
 | Floating Widget with audio-reactive animations | Done |
 | System Tray integration | Done |
 | Local engine (Faster-Whisper) | Done |
 | Cloud engine (OpenAI API) | Done |
 | Text cleanup & injection | Done |
 | Settings persistence | Done |
+| Logging infrastructure | Done |
 
 **State Machine**: Idle → Recording → Processing → (Success/Error)
-
----
-
-## Recent Improvements (In Progress)
-
-Code quality improvements from review:
-
-- [x] **Logging infrastructure** - App-wide logging with file/console output
-- [x] **Widget size constants** - Fixed label-to-size mismatch
-- [x] **Error handling** - Silent audio processing errors now logged
-- [x] **Code cleanup** - Removed unused legacy FrequencyBar class
-- [x] **Docstrings & type hints** - Improved code documentation
 
 ---
 
@@ -105,7 +113,7 @@ Code quality improvements from review:
 |----------|----------|
 | Voice Commands | Spoken punctuation ("period", "comma"), "delete that", "undo", "new line" |
 | Productivity | Custom text snippets triggered by phrase, quick phrases/templates |
-| Voice | Custom vocabulary, multi-language switch |
+| Voice | Custom vocabulary, multi-language switch, configurable language list in settings UI |
 | History | Favorites, export, search |
 | App | Auto-update, multiple profiles, cross-platform |
 
@@ -115,7 +123,8 @@ Code quality improvements from review:
 
 | Version | Focus |
 |---------|-------|
-| v1.0.0 | **Current** - Core functionality |
-| v1.1.0 | MVP polish, error handling, focus management |
+| v1.0.0 | Core functionality |
+| v1.0.1 | **Current** - Stability fixes, recovery mechanisms, language detection |
+| v1.1.0 | MVP polish, error handling, focus management, installer |
 | v1.2.0 | Widget animation redesign, transcription history |
 | v2.0.0 | Voice commands, advanced productivity |

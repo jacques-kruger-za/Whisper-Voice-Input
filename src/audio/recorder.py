@@ -82,6 +82,16 @@ class AudioRecorder:
             self._audio_data = []
             self._recording = True
 
+        # Close any leaked stream from a previous failed recording
+        if self._stream is not None:
+            logger.warning("Closing leaked audio stream before starting new recording")
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception as e:
+                logger.debug("Error closing leaked stream (expected if already closed): %s", e)
+            self._stream = None
+
         # Find device index if name specified
         device_id = None
         if self._device:
@@ -108,16 +118,22 @@ class AudioRecorder:
         """Stop recording and return path to audio file."""
         logger.debug("Stopping audio recording")
         with self._lock:
-            if not self._recording:
-                logger.debug("Not recording, nothing to stop")
-                return None
+            was_recording = self._recording
             self._recording = False
 
+        # Always close the stream to prevent leaks, even if _recording was already False
         if self._stream:
-            self._stream.stop()
-            self._stream.close()
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception as e:
+                logger.debug("Error closing stream during stop: %s", e)
             self._stream = None
             logger.debug("Audio stream closed")
+
+        if not was_recording:
+            logger.debug("Not recording, nothing to stop")
+            return None
 
         with self._lock:
             if not self._audio_data:
@@ -159,7 +175,25 @@ class AudioRecorder:
             self._audio_data = []
 
         if self._stream:
-            self._stream.stop()
-            self._stream.close()
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception as e:
+                logger.debug("Error closing stream during cancel: %s", e)
             self._stream = None
             logger.info("Audio recording cancelled")
+
+    def close_stream(self) -> None:
+        """Force-close the audio stream and reset state. Used for recovery from stuck states."""
+        logger.info("Force-closing audio stream (reset)")
+        with self._lock:
+            self._recording = False
+            self._audio_data = []
+
+        if self._stream:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception as e:
+                logger.debug("Error during force-close: %s", e)
+            self._stream = None

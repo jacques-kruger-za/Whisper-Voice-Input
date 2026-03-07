@@ -57,8 +57,16 @@ class LocalWhisperRecognizer(BaseRecognizer):
             self._model_name = model_name
             self._model = None
 
-    def transcribe(self, audio_path: Path, language: str | None = None) -> RecognitionResult:
-        """Transcribe audio file using Faster-Whisper."""
+    def transcribe(self, audio_path: Path, language: str | None = None,
+                   segment_callback=None) -> RecognitionResult:
+        """Transcribe audio file using Faster-Whisper.
+
+        Args:
+            audio_path: Path to WAV audio file.
+            language: Language code or None for auto-detect.
+            segment_callback: Optional callable(str) invoked with each segment's
+                text as it becomes available (for streaming UI updates).
+        """
         logger.debug("Starting transcription of '%s' (language=%s)", audio_path, language)
 
         if not self._load_model():
@@ -70,8 +78,10 @@ class LocalWhisperRecognizer(BaseRecognizer):
 
         try:
             # Map language codes
+            # "auto" → None (let Whisper auto-detect)
+            # Any other code → force that language (e.g. "en", "af", "en-US" → "en")
             lang = None
-            if language and language != "en":
+            if language and language != "auto":
                 # Strip region suffix for Whisper (en-US -> en)
                 lang = language.split("-")[0] if "-" in language else language
 
@@ -88,10 +98,15 @@ class LocalWhisperRecognizer(BaseRecognizer):
                 vad_filter=True,  # Filter out non-speech
             )
 
-            # Collect text from segments
+            # Collect text from segments, streaming each to callback
             text_parts = []
             for segment in segments:
                 text_parts.append(segment.text)
+                if segment_callback:
+                    try:
+                        segment_callback(segment.text)
+                    except Exception as e:
+                        logger.debug("Segment callback error (non-fatal): %s", e)
 
             full_text = " ".join(text_parts).strip()
 

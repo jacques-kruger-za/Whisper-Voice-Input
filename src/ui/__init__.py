@@ -3,12 +3,14 @@
 from .widget import FloatingWidget
 from .tray import TrayIcon
 from .settings import SettingsWindow
+from .callout import TranscriptionCallout
 from .styles import WIDGET_STYLE, SETTINGS_STYLE, TRAY_MENU_STYLE
 
 __all__ = [
     "FloatingWidget",
     "TrayIcon",
     "SettingsWindow",
+    "TranscriptionCallout",
     "WIDGET_STYLE",
     "SETTINGS_STYLE",
     "TRAY_MENU_STYLE",

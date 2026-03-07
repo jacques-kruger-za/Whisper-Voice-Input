@@ -33,8 +33,16 @@ class APIWhisperRecognizer(BaseRecognizer):
                 logger.error("Failed to initialize OpenAI client: %s", e)
         return self._client
 
-    def transcribe(self, audio_path: Path, language: str | None = None) -> RecognitionResult:
-        """Transcribe audio file using OpenAI Whisper API."""
+    def transcribe(self, audio_path: Path, language: str | None = None,
+                   segment_callback=None) -> RecognitionResult:
+        """Transcribe audio file using OpenAI Whisper API.
+
+        Args:
+            audio_path: Path to WAV audio file.
+            language: Language code or None for auto-detect.
+            segment_callback: Optional callable(str) invoked with the full text
+                once available (API does not support per-segment streaming).
+        """
         logger.debug("Starting API transcription of '%s' (language=%s)", audio_path, language)
 
         if not self._api_key:
@@ -54,8 +62,10 @@ class APIWhisperRecognizer(BaseRecognizer):
 
         try:
             # Map language codes
+            # "auto" → None (let API auto-detect)
+            # Any other code → force that language (e.g. "en", "af", "en-US" → "en")
             lang = None
-            if language and language != "en":
+            if language and language != "auto":
                 lang = language.split("-")[0] if "-" in language else language
 
             with open(audio_path, "rb") as audio_file:
@@ -72,6 +82,13 @@ class APIWhisperRecognizer(BaseRecognizer):
 
             # API returns string directly with response_format="text"
             text = transcript if isinstance(transcript, str) else str(transcript)
+
+            # API returns all text at once — emit as single segment
+            if segment_callback and text.strip():
+                try:
+                    segment_callback(text.strip())
+                except Exception as e:
+                    logger.debug("Segment callback error (non-fatal): %s", e)
 
             logger.info("API transcription complete: language=%s, text_length=%d",
                         lang or "en", len(text.strip()))

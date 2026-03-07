@@ -1,19 +1,27 @@
 """Main application class."""
 
 import os
+import sys
 import threading
 from pathlib import Path
 
+import pyperclip
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QObject, pyqtSignal, QTimer
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer, QTimerEvent, QPoint
 
 from .config import get_settings, STATE_IDLE, STATE_RECORDING, STATE_PROCESSING, STATE_ERROR
 from .config import ENGINE_LOCAL, ENGINE_API
+from .config.constants import TRANSCRIPTION_TIMEOUT_SECONDS
 from .config.logging_config import get_logger
 from .audio import AudioRecorder, validate_audio
 from .recognition import LocalWhisperRecognizer, APIWhisperRecognizer, cleanup_text
 from .input import HotkeyManager, inject_text
+from .input.window_focus import (
+    save_foreground_window, restore_foreground_window,
+    is_window_valid, get_foreground_window_if_external, get_window_title,
+)
 from .ui import FloatingWidget, TrayIcon, SettingsWindow
+from .ui.callout import TranscriptionCallout
 
 # Module logger
 logger = get_logger("app")
@@ -26,7 +34,9 @@ class VoiceInputApp(QObject):
     state_changed = pyqtSignal(str, str)  # state, message
     audio_level = pyqtSignal(float)
     transcription_complete = pyqtSignal(str)
+    transcription_segment = pyqtSignal(str)  # per-segment streaming
     error_occurred = pyqtSignal(str)
+    _hotkey_signal = pyqtSignal(object)  # HWND from hotkey thread → main thread
 
     def __init__(self, app: QApplication):
         super().__init__()
@@ -37,6 +47,13 @@ class VoiceInputApp(QObject):
         # State
         self._state = STATE_IDLE
         self._processing = False
+        self._error_recovery_timer_id: int | None = None
+        self._transcription_thread: threading.Thread | None = None
+        self._saved_hwnd: int | None = None  # Foreground window to restore after transcription
+        self._last_external_hwnd: int | None = None  # Last non-self foreground window (polled)
+        self._timeout_timer = QTimer()
+        self._timeout_timer.setSingleShot(True)
+        self._timeout_timer.timeout.connect(self._check_transcription_timeout)
         logger.debug("Initial state: %s", STATE_IDLE)
 
         # Components
@@ -67,7 +84,9 @@ class VoiceInputApp(QObject):
         self.state_changed.connect(self._on_state_changed)
         self.audio_level.connect(self._on_audio_level)
         self.transcription_complete.connect(self._on_transcription_complete)
+        self.transcription_segment.connect(self._on_segment)
         self.error_occurred.connect(self._on_error)
+        self._hotkey_signal.connect(self._toggle_with_focus)
 
         # Audio level callback
         self._recorder.set_level_callback(self._on_audio_level_raw)
@@ -84,10 +103,13 @@ class VoiceInputApp(QObject):
         """Setup UI components."""
         logger.debug("Setting up UI components")
 
+        # Transcription callout popup
+        self._callout = TranscriptionCallout()
+
         # Floating widget with configured size
         logger.debug("Creating floating widget with size: %s", self._settings.widget_size)
         self._widget = FloatingWidget(size_key=self._settings.widget_size)
-        self._widget.clicked.connect(self.toggle_recording)
+        self._widget.clicked.connect(self._on_widget_clicked)
 
         # Restore widget position
         if self._settings.widget_position:
@@ -102,13 +124,22 @@ class VoiceInputApp(QObject):
         # System tray
         logger.debug("Creating system tray icon")
         self._tray = TrayIcon()
-        self._tray.toggle_recording.connect(self.toggle_recording)
+        self._tray.toggle_recording.connect(self._on_tray_toggle)
         self._tray.show_widget.connect(self._show_widget)
         self._tray.hide_widget.connect(self._hide_widget)
         self._tray.open_settings.connect(self._open_settings)
+        self._tray.reset_state.connect(self._reset_state)
+        self._tray.restart_app.connect(self._restart_app)
         self._tray.quit_app.connect(self.quit)
         self._tray.show()
         logger.info("UI components initialized")
+
+        # Focus tracker — polls foreground window every 250ms, ignoring our own windows.
+        # Gives widget/tray clicks a correct "last external HWND" since clicking
+        # our own UI makes it foreground before the click handler runs.
+        self._focus_tracker = QTimer()
+        self._focus_tracker.timeout.connect(self._track_foreground_window)
+        self._focus_tracker.start(250)
 
         # First run message
         if self._settings.first_run:
@@ -146,34 +177,149 @@ class VoiceInputApp(QObject):
             self._widget.set_audio_level(level)
 
     def _on_transcription_complete(self, text: str) -> None:
-        """Handle completed transcription (UI thread)."""
+        """Handle completed transcription (UI thread).
+
+        1. Show final text in callout
+        2. Restore focus to saved window
+        3. Inject text via clipboard paste (after brief delay for focus to settle)
+        4. If focus restore failed, show paste-manually warning
+        """
+        self._timeout_timer.stop()
         self._processing = False
         if text:
             logger.info("Transcription complete: %d characters", len(text))
-            logger.debug("Transcribed text: %s", text[:100] + "..." if len(text) > 100 else text)
-            # Inject text
-            inject_text(text)
-            self.state_changed.emit(STATE_IDLE, "Done!")
-            # Brief delay then return to ready
-            QTimer.singleShot(1000, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
+
+            # Show final cleaned text in callout
+            self._callout.set_final_text(text)
+
+            # Copy text to clipboard first (available for manual paste as fallback)
+            pyperclip.copy(text)
+
+            # Try to restore focus and inject
+            hwnd = self._saved_hwnd
+            self._saved_hwnd = None
+            focus_restored = False
+
+            if hwnd and is_window_valid(hwnd):
+                focus_restored = restore_foreground_window(hwnd)
+            else:
+                logger.info("No valid HWND to restore (hwnd=%s)", hwnd)
+
+            if focus_restored:
+                # Use QTimer for the delay so we don't block the UI thread
+                QTimer.singleShot(150, lambda: self._inject_after_focus(text))
+            else:
+                # Can't paste automatically — warn user
+                logger.info("Auto-paste unavailable, text copied to clipboard")
+                self._callout.show_paste_warning(text)
+                self.state_changed.emit(STATE_IDLE, "Copied — paste manually")
+                if self._tray:
+                    self._tray.show_message(
+                        "Whisper Voice Input",
+                        "Text copied to clipboard. Paste manually with Ctrl+V.",
+                        4000
+                    )
+                QTimer.singleShot(2000, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
         else:
             logger.info("Transcription complete: no speech detected")
+            self._callout.clear()
+            self._saved_hwnd = None
             self.state_changed.emit(STATE_IDLE, "No speech detected")
             QTimer.singleShot(2000, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
+
+    def _inject_after_focus(self, text: str) -> None:
+        """Inject text after focus has settled (UI thread, called via QTimer)."""
+        logger.info("Injecting text into focused window")
+        inject_text(text)
+        self.state_changed.emit(STATE_IDLE, "Done!")
+        QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
 
     def _on_error(self, message: str) -> None:
         """Handle error (UI thread)."""
         logger.error("Error occurred: %s", message)
+        self._timeout_timer.stop()
         self._processing = False
+        self._callout.clear()
+        self._saved_hwnd = None
         self.state_changed.emit(STATE_ERROR, message)
-        # Return to ready after delay
-        QTimer.singleShot(3000, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
+
+        # Cancel any existing error recovery timer
+        if self._error_recovery_timer_id is not None:
+            self.killTimer(self._error_recovery_timer_id)
+            self._error_recovery_timer_id = None
+
+        # Start cancellable error recovery timer (3 seconds)
+        self._error_recovery_timer_id = self.startTimer(3000)
+        logger.debug("Error recovery timer started (id=%s)", self._error_recovery_timer_id)
+
+    def timerEvent(self, event: QTimerEvent) -> None:
+        """Handle timer events (error recovery)."""
+        timer_id = event.timerId()
+
+        if timer_id == self._error_recovery_timer_id:
+            # Kill the timer so it doesn't fire again
+            self.killTimer(timer_id)
+            self._error_recovery_timer_id = None
+
+            # Only recover if still in error state — if user pressed hotkey
+            # during the 3s window, state will have changed and we skip
+            if self._state == STATE_ERROR:
+                logger.info("Error recovery timer fired, returning to idle")
+                self.state_changed.emit(STATE_IDLE, "Ready")
+            else:
+                logger.debug("Error recovery timer fired but state is %s, skipping", self._state)
+        else:
+            super().timerEvent(event)
+
+    def _track_foreground_window(self) -> None:
+        """Poll the foreground window, keeping the last non-self HWND.
+
+        Runs every 250ms via QTimer. Only records windows belonging to
+        other processes so that widget/tray clicks have a correct target.
+        """
+        hwnd = get_foreground_window_if_external()
+        if hwnd:
+            self._last_external_hwnd = hwnd
 
     def _on_hotkey_pressed(self) -> None:
-        """Handle hotkey press (from hotkey thread)."""
-        logger.debug("Hotkey pressed, scheduling toggle_recording on main thread")
-        # Use QTimer to ensure we're on the main thread
-        QTimer.singleShot(0, self.toggle_recording)
+        """Handle hotkey press (from hotkey thread).
+
+        Captures the foreground window BEFORE scheduling to the main thread,
+        because the hotkey fires while the target app still has focus.
+        Uses pyqtSignal (not QTimer) for reliable cross-thread dispatch.
+        """
+        hwnd = save_foreground_window()
+        logger.info("Hotkey pressed, saved HWND=%s, emitting signal to main thread", hwnd)
+        self._hotkey_signal.emit(hwnd)
+
+    def _on_widget_clicked(self) -> None:
+        """Handle widget click — use tracked external HWND then toggle.
+
+        Clicking the widget makes it foreground BEFORE this handler runs,
+        so save_foreground_window() would capture our own widget. Instead
+        we use the last external HWND from the focus tracker.
+        """
+        hwnd = self._last_external_hwnd
+        title = get_window_title(hwnd) if hwnd else "(none)"
+        logger.info("Widget clicked, using tracked HWND=%s title='%s'", hwnd, title)
+        self._toggle_with_focus(hwnd)
+
+    def _on_tray_toggle(self) -> None:
+        """Handle tray toggle — use tracked external HWND then toggle.
+
+        Same as widget click: the tray menu steals focus before this runs.
+        """
+        hwnd = self._last_external_hwnd
+        title = get_window_title(hwnd) if hwnd else "(none)"
+        logger.info("Tray toggle, using tracked HWND=%s title='%s'", hwnd, title)
+        self._toggle_with_focus(hwnd)
+
+    def _toggle_with_focus(self, saved_hwnd: int | None) -> None:
+        """Toggle recording with a saved foreground window handle."""
+        # Only save HWND when starting a new recording (not when stopping)
+        if self._state == STATE_IDLE:
+            self._saved_hwnd = saved_hwnd
+        self.toggle_recording()
 
     def toggle_recording(self) -> None:
         """Toggle recording state."""
@@ -181,12 +327,23 @@ class VoiceInputApp(QObject):
             logger.debug("Toggle recording ignored: currently processing")
             return  # Don't interrupt processing
 
+        if self._state == STATE_ERROR:
+            # User pressed hotkey during error display — cancel error timer and go to idle
+            logger.info("Toggle recording during error state: cancelling error recovery")
+            if self._error_recovery_timer_id is not None:
+                self.killTimer(self._error_recovery_timer_id)
+                self._error_recovery_timer_id = None
+            self.state_changed.emit(STATE_IDLE, "Ready")
+            return
+
         if self._state == STATE_RECORDING:
             logger.debug("Toggle recording: stopping")
             self._stop_recording()
-        else:
+        elif self._state == STATE_IDLE:
             logger.debug("Toggle recording: starting")
             self._start_recording()
+        else:
+            logger.debug("Toggle recording ignored: state is %s", self._state)
 
     def _start_recording(self) -> None:
         """Start recording audio."""
@@ -197,6 +354,15 @@ class VoiceInputApp(QObject):
         logger.info("Starting audio recording")
         self.state_changed.emit(STATE_RECORDING, "Recording...")
         self._recorder.start()
+
+        # Show callout (empty, ready for segments)
+        self._callout.clear()
+        if self._widget and self._widget.isVisible():
+            pos = self._widget.pos()
+            size = self._widget.width()
+            self._callout.show_at_widget(pos, size)
+        else:
+            self._callout.show_near_tray()
 
     def _stop_recording(self) -> None:
         """Stop recording and process audio."""
@@ -219,11 +385,27 @@ class VoiceInputApp(QObject):
 
         logger.info("Starting transcription in background thread")
         # Process in background thread
-        threading.Thread(
+        self._transcription_thread = threading.Thread(
             target=self._process_audio,
             args=(audio_path,),
             daemon=True
-        ).start()
+        )
+        self._transcription_thread.start()
+
+        # Start transcription timeout (cancellable — prevents stale timeouts
+        # from earlier transcriptions from firing during a new one)
+        self._timeout_timer.start(TRANSCRIPTION_TIMEOUT_SECONDS * 1000)
+
+    def _check_transcription_timeout(self) -> None:
+        """Check if transcription has timed out."""
+        if self._processing and self._transcription_thread and self._transcription_thread.is_alive():
+            logger.error("Transcription timed out after %d seconds", TRANSCRIPTION_TIMEOUT_SECONDS)
+            self._processing = False
+            self._transcription_thread = None
+            self.error_occurred.emit(
+                f"Transcription timed out after {TRANSCRIPTION_TIMEOUT_SECONDS}s. "
+                "Try a shorter recording or use Reset State."
+            )
 
     def _process_audio(self, audio_path: Path) -> None:
         """Process audio file (runs in background thread)."""
@@ -238,9 +420,12 @@ class VoiceInputApp(QObject):
                 recognizer = self._local_recognizer
                 recognizer.set_model(self._settings.model)
 
-            # Transcribe
+            # Transcribe with segment streaming
             logger.debug("Transcribing audio with language: %s", self._settings.language)
-            result = recognizer.transcribe(audio_path, self._settings.language)
+            result = recognizer.transcribe(
+                audio_path, self._settings.language,
+                segment_callback=self._emit_segment,
+            )
             logger.debug("Transcription result: %s", result)
 
             # Clean up temp file
@@ -262,6 +447,21 @@ class VoiceInputApp(QObject):
         except Exception as e:
             logger.exception("Exception during audio processing: %s", e)
             self.error_occurred.emit(str(e))
+        finally:
+            # Ensure _processing is always cleared, even if signal emission
+            # fails during shutdown
+            self._processing = False
+            self._transcription_thread = None
+
+    def _emit_segment(self, text: str) -> None:
+        """Emit a transcription segment signal (called from background thread)."""
+        logger.info("Segment received: %s", text[:60] + "..." if len(text) > 60 else text)
+        self.transcription_segment.emit(text)
+
+    def _on_segment(self, text: str) -> None:
+        """Handle a transcription segment (UI thread)."""
+        logger.info("Displaying segment in callout")
+        self._callout.append_segment(text)
 
     def _show_widget(self) -> None:
         """Show the floating widget."""
@@ -327,6 +527,73 @@ class VoiceInputApp(QObject):
         if self._widget:
             self._widget.set_size(size_key)
 
+    def _reset_state(self) -> None:
+        """Reset the app to idle state. Used to recover from stuck states."""
+        logger.info("Resetting application state")
+
+        # Cancel error recovery timer
+        if self._error_recovery_timer_id is not None:
+            self.killTimer(self._error_recovery_timer_id)
+            self._error_recovery_timer_id = None
+
+        # Clear processing flag
+        self._processing = False
+        self._transcription_thread = None
+        self._saved_hwnd = None
+
+        # Hide callout
+        self._callout.clear()
+
+        # Force-close any audio stream
+        self._recorder.close_stream()
+
+        # Return to idle
+        self.state_changed.emit(STATE_IDLE, "Ready")
+
+        # Notify user
+        if self._tray:
+            self._tray.show_message(
+                "Whisper Voice Input",
+                "State has been reset. Ready for recording.",
+                3000
+            )
+        logger.info("Application state reset complete")
+
+    def _restart_app(self) -> None:
+        """Restart the entire application process."""
+        logger.info("Application restart initiated")
+
+        # Save widget position
+        if self._widget and self._widget.isVisible():
+            self._settings.widget_position = self._widget.save_position()
+
+        # Stop everything
+        self._focus_tracker.stop()
+        self._hotkey_manager.stop()
+        self._recorder.close_stream()
+
+        # Hide UI
+        self._callout.clear()
+        if self._widget:
+            self._widget.hide()
+        if self._tray:
+            self._tray.hide()
+
+        # Replace the current process with a fresh one
+        logger.info("Restarting process: %s %s", sys.executable, sys.argv)
+        try:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception as e:
+            logger.error("Failed to restart: %s", e)
+            # Fallback: just quit and let user restart manually
+            if self._tray:
+                self._tray.show()
+                self._tray.show_message(
+                    "Whisper Voice Input",
+                    f"Restart failed: {e}. Please restart manually.",
+                    5000
+                )
+
     def quit(self) -> None:
         """Quit the application."""
         logger.info("Application shutdown initiated")
@@ -336,7 +603,8 @@ class VoiceInputApp(QObject):
             logger.debug("Saving widget position")
             self._settings.widget_position = self._widget.save_position()
 
-        # Stop hotkey listener
+        # Stop focus tracker and hotkey listener
+        self._focus_tracker.stop()
         logger.debug("Stopping hotkey listener")
         self._hotkey_manager.stop()
 
@@ -346,6 +614,7 @@ class VoiceInputApp(QObject):
 
         # Hide UI
         logger.debug("Hiding UI components")
+        self._callout.clear()
         if self._widget:
             self._widget.hide()
         if self._tray:

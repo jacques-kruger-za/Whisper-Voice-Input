@@ -1,11 +1,17 @@
 """Application constants."""
 
 APP_NAME = "Whisper Voice Input"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 APP_AUTHOR = "WhisperVoiceInput"
 
 # Default hotkey (Ctrl+Shift+Space)
 DEFAULT_HOTKEY = {"ctrl": True, "shift": True, "alt": False, "key": "space"}
+
+# Hotkey debounce (milliseconds) - prevents key bounce and rapid re-fire
+HOTKEY_DEBOUNCE_MS = 500
+
+# Transcription timeout (seconds) - prevents indefinite hang
+TRANSCRIPTION_TIMEOUT_SECONDS = 120
 
 # Audio settings
 SAMPLE_RATE = 16000  # Whisper expects 16kHz
@@ -15,9 +21,13 @@ CHANNELS = 1  # Mono audio
 WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 DEFAULT_MODEL = "base"
 
-# Supported languages (out of box)
+# Supported languages
+# "auto" = let Whisper auto-detect (unreliable on short audio)
+# All other codes force the language explicitly to Whisper
 SUPPORTED_LANGUAGES = {
-    "en": "English (Auto-detect)",
+    "auto": "Auto-detect",
+    "en": "English",
+    "af": "Afrikaans",
     "en-US": "English (US)",
     "en-GB": "English (UK)",
     "en-ZA": "English (South Africa)",

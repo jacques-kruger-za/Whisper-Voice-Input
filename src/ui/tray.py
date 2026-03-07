@@ -34,6 +34,8 @@ class TrayIcon(QObject):
     show_widget = pyqtSignal()
     hide_widget = pyqtSignal()
     open_settings = pyqtSignal()
+    reset_state = pyqtSignal()
+    restart_app = pyqtSignal()
     quit_app = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -76,6 +78,15 @@ class TrayIcon(QObject):
         # Settings
         settings_action = self._menu.addAction("Settings")
         settings_action.triggered.connect(self.open_settings.emit)
+
+        self._menu.addSeparator()
+
+        # Recovery options
+        reset_action = self._menu.addAction("Reset State")
+        reset_action.triggered.connect(self.reset_state.emit)
+
+        restart_action = self._menu.addAction("Restart App")
+        restart_action.triggered.connect(self.restart_app.emit)
 
         self._menu.addSeparator()
 
