@@ -533,7 +533,11 @@ class FloatingWidget(QWidget):
                 continue
             # i=0 oldest → leftmost; i=NUM_BARS-1 newest → rightmost (next to circle)
             x = strip_left + (i + 0.5) * bar_slot
-            half_h = clamp(level, 0.0, 1.0) * max_half_height
+            # Audio RMS rarely hits 1.0 — typical speech is 0.1..0.3. Apply a
+            # sqrt curve to compress dynamic range so normal speaking volume
+            # pushes bars to ~50-70% of max height, with shouting near 100%.
+            shaped = math.sqrt(clamp(level, 0.0, 1.0))
+            half_h = shaped * max_half_height
             # Linear fade: opacity ramps from 0 at left edge to 1 at the circle
             fade = (i + 1) / NUM_BARS
             color = QColor(base_color)
