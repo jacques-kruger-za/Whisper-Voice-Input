@@ -13,7 +13,7 @@ from rapidfuzz import fuzz
 from src.config.constants import (
     COMMAND_DEFINITIONS, COMMAND_THRESHOLD, COMMAND_WAKE_WORD,
 )
-from ..config import get_logger
+from ..config import get_logger, get_settings
 
 logger = get_logger(__name__)
 
@@ -21,6 +21,22 @@ _WAKE_WORD_RE = re.compile(
     r"^\s*" + re.escape(COMMAND_WAKE_WORD) + r"\b[\s,.:;!?-]*",
     re.IGNORECASE,
 )
+
+
+def _active_commands() -> dict[str, dict]:
+    """Built-in defaults merged with user customs (custom wins on conflict).
+
+    Customs are stored as flat phrase -> keystroke; we wrap them into the
+    same shape as COMMAND_DEFINITIONS so the classifier code is uniform.
+    """
+    try:
+        custom = get_settings().custom_commands or {}
+    except Exception:
+        custom = {}
+    merged = dict(COMMAND_DEFINITIONS)
+    for phrase, keystroke in custom.items():
+        merged[phrase] = {"keystroke": keystroke, "description": "custom"}
+    return merged
 
 
 class CommandResult:
@@ -79,7 +95,7 @@ def classify_transcription(
     best_phrase = None
     best_info = None
     best_score = 0.0
-    for phrase, info in COMMAND_DEFINITIONS.items():
+    for phrase, info in _active_commands().items():
         score = fuzz.ratio(suffix, phrase.lower())
         if score > best_score:
             best_score = score

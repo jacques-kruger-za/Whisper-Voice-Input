@@ -2,9 +2,18 @@
 
 import re
 from ..config.constants import PUNCTUATION_WORDS
-from ..config import get_logger
+from ..config import get_logger, get_settings
 
 logger = get_logger(__name__)
+
+
+def _active_punctuation() -> dict[str, str]:
+    """Merge built-in defaults with user customs (custom wins on conflict)."""
+    try:
+        custom = get_settings().custom_punctuation or {}
+    except Exception:
+        custom = {}
+    return {**PUNCTUATION_WORDS, **custom}
 
 
 def process_spoken_punctuation(text: str) -> str:
@@ -48,7 +57,7 @@ def process_spoken_punctuation(text: str) -> str:
     # Sort punctuation words by length (longest first) to handle multi-word
     # terms like "question mark" before single words like "mark"
     sorted_punctuation = sorted(
-        PUNCTUATION_WORDS.items(),
+        _active_punctuation().items(),
         key=lambda x: len(x[0]),
         reverse=True
     )

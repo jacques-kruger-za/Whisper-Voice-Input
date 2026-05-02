@@ -53,7 +53,8 @@ class SettingsWindow(QDialog):
     def _setup_ui(self) -> None:
         """Initialize the settings UI."""
         self.setWindowTitle(f"{APP_NAME} Settings")
-        self.setMinimumSize(500, 550)
+        self.setMinimumSize(640, 640)
+        self.resize(720, 820)
         self.setStyleSheet(SETTINGS_STYLE)
 
         # Main layout
@@ -300,20 +301,30 @@ class SettingsWindow(QDialog):
         editing_layout = QVBoxLayout(editing_group)
 
         editing_desc = QLabel(
-            "Spoken words that are converted into characters during dictation. "
-            "Works mid-sentence — say 'comma' or 'new line' as you talk."
+            "Spoken words that get converted into characters during dictation. "
+            "Works mid-sentence — say 'comma' or 'new line' as you talk. "
+            "Built-in entries are marked [default]; your additions show with ★ "
+            "and override defaults with the same phrase."
         )
         editing_desc.setWordWrap(True)
         editing_desc.setStyleSheet("color: #888888;")
         editing_layout.addWidget(editing_desc)
 
-        editing_list = QListWidget()
-        editing_list.setMaximumHeight(140)
-        editing_list.setEnabled(False)  # read-only catalog for now
-        for phrase, symbol in PUNCTUATION_WORDS.items():
-            display_symbol = symbol.replace("\n", "↵")
-            editing_list.addItem(f"  {phrase}  →  {display_symbol}")
-        editing_layout.addWidget(editing_list)
+        punct_row = QHBoxLayout()
+        self._punctuation_list = QListWidget()
+        self._punctuation_list.setMinimumHeight(150)
+        punct_row.addWidget(self._punctuation_list)
+
+        punct_btns = QVBoxLayout()
+        self._add_punct_btn = QPushButton("Add")
+        self._add_punct_btn.clicked.connect(self._add_punctuation)
+        punct_btns.addWidget(self._add_punct_btn)
+        self._remove_punct_btn = QPushButton("Remove")
+        self._remove_punct_btn.clicked.connect(self._remove_punctuation)
+        punct_btns.addWidget(self._remove_punct_btn)
+        punct_btns.addStretch()
+        punct_row.addLayout(punct_btns)
+        editing_layout.addLayout(punct_row)
 
         layout.addWidget(editing_group)
 
@@ -325,7 +336,8 @@ class SettingsWindow(QDialog):
             f"Send keystrokes to the focused editor by saying "
             f"<b>'{COMMAND_WAKE_WORD} &lt;name&gt;'</b> "
             f"(e.g. '{COMMAND_WAKE_WORD} save'). The wake-word prefix prevents "
-            f"false positives during normal dictation."
+            f"false positives during normal dictation. Built-ins are [default]; "
+            f"your additions show ★."
         )
         commands_desc.setWordWrap(True)
         commands_desc.setStyleSheet("color: #888888;")
@@ -335,12 +347,21 @@ class SettingsWindow(QDialog):
         self._commands_enabled_check.setChecked(True)
         commands_layout.addWidget(self._commands_enabled_check)
 
-        commands_list = QListWidget()
-        commands_list.setMaximumHeight(160)
-        commands_list.setEnabled(False)  # read-only catalog for now
-        for phrase, info in COMMAND_DEFINITIONS.items():
-            commands_list.addItem(f"  {COMMAND_WAKE_WORD} {phrase}  →  {info['keystroke']}    ({info['description']})")
-        commands_layout.addWidget(commands_list)
+        cmd_row = QHBoxLayout()
+        self._commands_list = QListWidget()
+        self._commands_list.setMinimumHeight(150)
+        cmd_row.addWidget(self._commands_list)
+
+        cmd_btns = QVBoxLayout()
+        self._add_cmd_btn = QPushButton("Add")
+        self._add_cmd_btn.clicked.connect(self._add_command)
+        cmd_btns.addWidget(self._add_cmd_btn)
+        self._remove_cmd_btn = QPushButton("Remove")
+        self._remove_cmd_btn.clicked.connect(self._remove_command)
+        cmd_btns.addWidget(self._remove_cmd_btn)
+        cmd_btns.addStretch()
+        cmd_row.addLayout(cmd_btns)
+        commands_layout.addLayout(cmd_row)
 
         layout.addWidget(commands_group)
 
@@ -424,6 +445,13 @@ class SettingsWindow(QDialog):
         commands_enabled = getattr(self._settings, 'commands_enabled', True)
         self._commands_enabled_check.setChecked(bool(commands_enabled))
 
+        # Custom punctuation + commands (working copies — modified by buttons,
+        # persisted on Save)
+        self._punct_customs = dict(getattr(self._settings, 'custom_punctuation', {}) or {})
+        self._cmd_customs = dict(getattr(self._settings, 'custom_commands', {}) or {})
+        self._refresh_punctuation_list()
+        self._refresh_commands_list()
+
         # Update UI state
         self._on_engine_changed()
 
@@ -466,6 +494,115 @@ class SettingsWindow(QDialog):
         current_item = self._vocabulary_list.currentItem()
         if current_item:
             self._vocabulary_list.takeItem(self._vocabulary_list.row(current_item))
+
+    # ── Spoken-punctuation list management ────────────────────────────────
+
+    def _refresh_punctuation_list(self) -> None:
+        """Rebuild the punctuation list from defaults + working customs."""
+        self._punctuation_list.clear()
+        # Defaults first (stable order from constants), then customs
+        for phrase, symbol in PUNCTUATION_WORDS.items():
+            display = symbol.replace("\n", "↵").replace("\t", "→ ")
+            item = self._punctuation_list.addItem(f"  {phrase}  ⇒  {display}    [default]")
+        for phrase, symbol in self._punct_customs.items():
+            display = symbol.replace("\n", "↵").replace("\t", "→ ")
+            self._punctuation_list.addItem(f"  ★ {phrase}  ⇒  {display}")
+
+    def _add_punctuation(self) -> None:
+        phrase, ok = QInputDialog.getText(
+            self, "Add Spoken Punctuation",
+            "Spoken phrase (e.g. 'open paren'):",
+        )
+        if not ok or not phrase.strip():
+            return
+        phrase = phrase.strip().lower()
+
+        symbol, ok = QInputDialog.getText(
+            self, "Add Spoken Punctuation",
+            f"Replacement for '{phrase}'\n"
+            f"(use \\n for newline, \\t for tab):",
+        )
+        if not ok:
+            return
+        symbol = symbol.replace("\\n", "\n").replace("\\t", "\t")
+        if not symbol:
+            return
+        self._punct_customs[phrase] = symbol
+        self._refresh_punctuation_list()
+
+    def _remove_punctuation(self) -> None:
+        item = self._punctuation_list.currentItem()
+        if not item:
+            return
+        text = item.text()
+        if "[default]" in text:
+            QMessageBox.information(
+                self, "Built-in entry",
+                "Default entries cannot be removed. Add a custom entry with the "
+                "same phrase to override it.",
+            )
+            return
+        # Custom entry — extract phrase between "★ " and "  ⇒"
+        if "★" in text:
+            phrase_part = text.split("★", 1)[1].split("⇒", 1)[0].strip()
+            if phrase_part in self._punct_customs:
+                del self._punct_customs[phrase_part]
+                self._refresh_punctuation_list()
+
+    # ── Editor-command list management ────────────────────────────────────
+
+    def _refresh_commands_list(self) -> None:
+        """Rebuild the commands list from defaults + working customs."""
+        self._commands_list.clear()
+        for phrase, info in COMMAND_DEFINITIONS.items():
+            self._commands_list.addItem(
+                f"  {COMMAND_WAKE_WORD} {phrase}  ⇒  {info['keystroke']}    [default]"
+            )
+        for phrase, keystroke in self._cmd_customs.items():
+            self._commands_list.addItem(
+                f"  ★ {COMMAND_WAKE_WORD} {phrase}  ⇒  {keystroke}"
+            )
+
+    def _add_command(self) -> None:
+        phrase, ok = QInputDialog.getText(
+            self, "Add Editor Command",
+            "Spoken phrase (after '" + COMMAND_WAKE_WORD + "'):",
+        )
+        if not ok or not phrase.strip():
+            return
+        phrase = phrase.strip().lower()
+
+        keystroke, ok = QInputDialog.getText(
+            self, "Add Editor Command",
+            f"Keystroke for '{COMMAND_WAKE_WORD} {phrase}'\n"
+            f"(e.g. ctrl+s, ctrl+shift+f, alt+tab):",
+        )
+        if not ok or not keystroke.strip():
+            return
+        self._cmd_customs[phrase] = keystroke.strip().lower()
+        self._refresh_commands_list()
+
+    def _remove_command(self) -> None:
+        item = self._commands_list.currentItem()
+        if not item:
+            return
+        text = item.text()
+        if "[default]" in text:
+            QMessageBox.information(
+                self, "Built-in command",
+                "Default commands cannot be removed. Add a custom command with the "
+                "same phrase to override the keystroke.",
+            )
+            return
+        if "★" in text:
+            # Format: "  ★ command <phrase>  ⇒  <keystroke>"
+            after_star = text.split("★", 1)[1].strip()  # "command <phrase>  ⇒  <keystroke>"
+            if after_star.lower().startswith(COMMAND_WAKE_WORD + " "):
+                rest = after_star[len(COMMAND_WAKE_WORD) + 1:]
+                phrase_part = rest.split("⇒", 1)[0].strip()
+                if phrase_part in self._cmd_customs:
+                    del self._cmd_customs[phrase_part]
+                    self._refresh_commands_list()
 
     def _capture_hotkey(self) -> None:
         """Start capturing a new hotkey."""
@@ -520,6 +657,12 @@ class SettingsWindow(QDialog):
         # Commands active
         if hasattr(self._settings, 'commands_enabled'):
             self._settings.commands_enabled = self._commands_enabled_check.isChecked()
+
+        # Custom punctuation + commands
+        if hasattr(self._settings, 'custom_punctuation'):
+            self._settings.custom_punctuation = self._punct_customs
+        if hasattr(self._settings, 'custom_commands'):
+            self._settings.custom_commands = self._cmd_customs
 
         # Handle autostart
         self._update_autostart()

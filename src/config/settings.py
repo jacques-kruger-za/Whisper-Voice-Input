@@ -43,6 +43,8 @@ class Settings:
             "custom_vocabulary": [],
             "command_threshold": 80,
             "commands_enabled": True,
+            "custom_punctuation": {},
+            "custom_commands": {},
         }
 
     def _load(self) -> None:
@@ -201,6 +203,26 @@ class Settings:
     @commands_enabled.setter
     def commands_enabled(self, value: bool) -> None:
         self.set("commands_enabled", bool(value))
+
+    @property
+    def custom_punctuation(self) -> dict[str, str]:
+        """User-added spoken-punctuation mappings (phrase -> symbol)."""
+        v = self._settings.get("custom_punctuation", {})
+        return v if isinstance(v, dict) else {}
+
+    @custom_punctuation.setter
+    def custom_punctuation(self, value: dict[str, str]) -> None:
+        self.set("custom_punctuation", dict(value))
+
+    @property
+    def custom_commands(self) -> dict[str, str]:
+        """User-added editor commands (phrase -> keystroke)."""
+        v = self._settings.get("custom_commands", {})
+        return v if isinstance(v, dict) else {}
+
+    @custom_commands.setter
+    def custom_commands(self, value: dict[str, str]) -> None:
+        self.set("custom_commands", dict(value))
 
 
 # Global settings instance
