@@ -178,6 +178,13 @@ class SettingsWindow(QDialog):
         self._api_key_edit.setPlaceholderText("sk-...")
         layout.addRow("OpenAI API Key:", self._api_key_edit)
 
+        # Streaming mode (experimental) — continuous transcription with
+        # mid-utterance text injection vs the default record-then-transcribe.
+        self._streaming_check = QCheckBox(
+            "Streaming mode (experimental — text appears as you speak)"
+        )
+        layout.addRow("", self._streaming_check)
+
         return group
 
     def _create_startup_section(self) -> QGroupBox:
@@ -445,6 +452,10 @@ class SettingsWindow(QDialog):
         commands_enabled = getattr(self._settings, 'commands_enabled', True)
         self._commands_enabled_check.setChecked(bool(commands_enabled))
 
+        # Streaming mode (experimental)
+        streaming = getattr(self._settings, 'streaming_mode', False)
+        self._streaming_check.setChecked(bool(streaming))
+
         # Custom punctuation + commands (working copies — modified by buttons,
         # persisted on Save)
         self._punct_customs = dict(getattr(self._settings, 'custom_punctuation', {}) or {})
@@ -657,6 +668,10 @@ class SettingsWindow(QDialog):
         # Commands active
         if hasattr(self._settings, 'commands_enabled'):
             self._settings.commands_enabled = self._commands_enabled_check.isChecked()
+
+        # Streaming mode (experimental)
+        if hasattr(self._settings, 'streaming_mode'):
+            self._settings.streaming_mode = self._streaming_check.isChecked()
 
         # Custom punctuation + commands
         if hasattr(self._settings, 'custom_punctuation'):

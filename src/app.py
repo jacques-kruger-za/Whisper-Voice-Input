@@ -17,7 +17,9 @@ from .audio import AudioRecorder, validate_audio
 from .recognition import (
     LocalWhisperRecognizer, APIWhisperRecognizer, cleanup_text,
     CommandProcessor, classify_transcription,
+    StreamingTranscriber,
 )
+from .config.constants import SAMPLE_RATE
 from .input import HotkeyManager, inject_text
 from .input.window_focus import (
     save_foreground_window, restore_foreground_window,
@@ -40,6 +42,9 @@ class VoiceInputApp(QObject):
     transcription_segment = pyqtSignal(str)  # per-segment streaming
     command_detected = pyqtSignal(object)  # CommandResult from background thread
     error_occurred = pyqtSignal(str)
+    # Streaming-mode signals (worker thread → UI thread)
+    streaming_committed = pyqtSignal(str)
+    streaming_tentative = pyqtSignal(str)
     _hotkey_signal = pyqtSignal(object)  # HWND from hotkey thread → main thread
 
     def __init__(self, app: QApplication):
@@ -71,6 +76,12 @@ class VoiceInputApp(QObject):
         self._command_processor = CommandProcessor()
         self._hotkey_manager = HotkeyManager()
 
+        # Streaming-mode state (None when not active)
+        self._streamer: StreamingTranscriber | None = None
+        # Whether anything has been injected during the current streaming
+        # session — drives leading-space behaviour between committed deltas.
+        self._streaming_injected_any = False
+
         # UI
         self._widget: FloatingWidget | None = None
         self._tray: TrayIcon | None = None
@@ -92,6 +103,8 @@ class VoiceInputApp(QObject):
         self.transcription_complete.connect(self._on_transcription_complete)
         self.transcription_segment.connect(self._on_segment)
         self.command_detected.connect(self._on_command_detected)
+        self.streaming_committed.connect(self._on_streaming_committed)
+        self.streaming_tentative.connect(self._on_streaming_tentative)
         self.error_occurred.connect(self._on_error)
         self._hotkey_signal.connect(self._toggle_with_focus)
 
@@ -276,6 +289,75 @@ class VoiceInputApp(QObject):
         self.state_changed.emit(STATE_IDLE, msg)
         QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
 
+    # ── Streaming pipeline (UI thread, fed by Qt signals from worker) ────
+
+    def _on_streaming_committed(self, raw_text: str) -> None:
+        """A new committed delta arrived from the streamer.
+
+        Apply the standard cleanup → classify → inject/fire pipeline at the
+        DELTA level. A wake-word command is recognised only when the delta
+        STARTS with the wake word (segment-start semantics). Other text is
+        cleaned up (spoken punctuation etc.) and pasted into the focused
+        editor.
+        """
+        if not raw_text or not raw_text.strip():
+            return
+
+        # Classify on the raw text (cleanup adds capitalisation/punctuation
+        # that hurts fuzzy matching, same reason as batch path).
+        if self._settings.commands_enabled:
+            classification, cmd_result = classify_transcription(
+                raw_text, threshold=self._settings.command_threshold
+            )
+        else:
+            classification, cmd_result = ("dictation", None)
+
+        if classification == "command" and cmd_result and cmd_result.keystroke:
+            logger.info("Streaming command: %s", cmd_result)
+            self._on_command_detected(cmd_result)
+            # Don't inject the command text as dictation — it's an action.
+            return
+
+        cleaned = cleanup_text(raw_text)
+        if not cleaned:
+            return
+
+        # Restore focus to the saved target if needed; only the FIRST commit
+        # in a session needs the bring-to-front, subsequent commits go to
+        # whatever is now focused (the same window, since we just put it
+        # there). If user clicked away, their text goes wherever they pointed.
+        if not self._streaming_injected_any:
+            hwnd = self._saved_hwnd
+            if hwnd and is_window_valid(hwnd):
+                restore_foreground_window(hwnd)
+                # Settle delay before first paste
+                QTimer.singleShot(150, lambda: self._inject_streaming_chunk(cleaned))
+                return
+            else:
+                logger.warning("Streaming: no valid focus target — discarding %r", cleaned[:40])
+                return
+
+        # Subsequent chunks: paste immediately, prepend a space so words
+        # don't smash together across deltas.
+        self._inject_streaming_chunk(" " + cleaned)
+
+    def _inject_streaming_chunk(self, text: str) -> None:
+        """Paste a streaming chunk via clipboard. Marks session as injected."""
+        if not text:
+            return
+        logger.info("Streaming inject: %r", text[:60])
+        inject_text(text)
+        self._streaming_injected_any = True
+
+    def _on_streaming_tentative(self, text: str) -> None:
+        """Tentative tail update — currently just logged.
+
+        Future: render as a faint overlay on/near the bar strip so the user
+        sees what's still flickering. Not visualised yet to keep S3 small.
+        """
+        if text:
+            logger.debug("Streaming tentative: %r", text[:80])
+
     def _on_error(self, message: str) -> None:
         """Handle error (UI thread)."""
         logger.error("Error occurred: %s", message)
@@ -394,30 +476,52 @@ class VoiceInputApp(QObject):
             logger.debug("Toggle recording ignored: state is %s", self._state)
 
     def _start_recording(self) -> None:
-        """Start recording audio."""
+        """Start recording audio (streaming or batch mode)."""
         if self._recorder.is_recording():
             logger.debug("Start recording ignored: already recording")
             return
 
-        logger.info("Starting audio recording")
+        logger.info("Starting audio recording (streaming=%s)", self._settings.streaming_mode)
         self.state_changed.emit(STATE_RECORDING, "Recording...")
+
+        if self._settings.streaming_mode:
+            self._start_streaming()
+
         self._recorder.start()
 
-        # Show callout (empty, ready for segments)
-        self._callout.clear()
-        if self._widget and self._widget.isVisible():
-            pos = self._widget.pos()
-            size = self._widget.width()
-            self._callout.show_at_widget(pos, size)
-        else:
-            self._callout.show_near_tray()
+    def _start_streaming(self) -> None:
+        """Spin up the streaming transcriber and hook the recorder to feed it."""
+        vocab = self._settings.custom_vocabulary
+        initial_prompt = ", ".join(vocab) if vocab else None
+
+        self._streaming_injected_any = False
+        self._streamer = StreamingTranscriber(
+            self._local_recognizer,
+            sample_rate=SAMPLE_RATE,
+            window_seconds=12.0,
+            interval_seconds=1.0,
+            language=self._settings.language,
+            initial_prompt=initial_prompt,
+            vad_min_silence_ms=500,
+            on_committed=lambda t: self.streaming_committed.emit(t),
+            on_tentative=lambda t: self.streaming_tentative.emit(t),
+        )
+        self._streamer.start()
+        # Recorder feeds raw chunks straight into the streamer's buffer.
+        self._recorder.set_chunk_callback(self._streamer.feed)
+        logger.info("Streaming mode active")
 
     def _stop_recording(self) -> None:
-        """Stop recording and process audio."""
+        """Stop recording. In streaming mode, finalize stream; in batch, transcribe."""
         if not self._recorder.is_recording():
             logger.debug("Stop recording ignored: not recording")
             return
 
+        if self._streamer is not None:
+            self._stop_streaming()
+            return
+
+        # Batch mode: existing record-then-transcribe path
         logger.info("Stopping audio recording")
         self.state_changed.emit(STATE_PROCESSING, "Processing...")
         self._processing = True
@@ -443,6 +547,24 @@ class VoiceInputApp(QObject):
         # Start transcription timeout (cancellable — prevents stale timeouts
         # from earlier transcriptions from firing during a new one)
         self._timeout_timer.start(TRANSCRIPTION_TIMEOUT_SECONDS * 1000)
+
+    def _stop_streaming(self) -> None:
+        """Tear down streaming. Recorder keeps the WAV around as a fallback
+        but we don't transcribe it again — the streamer already produced
+        committed text mid-flight.
+        """
+        logger.info("Stopping streaming")
+        # Detach the chunk callback FIRST so no further audio reaches the
+        # streamer after we ask it to stop.
+        self._recorder.set_chunk_callback(None)
+        # Cancel rather than stop() so we don't write a redundant WAV.
+        self._recorder.cancel()
+        if self._streamer:
+            self._streamer.stop()
+            self._streamer = None
+        # No PROCESSING phase in streaming — text was injected as it came.
+        self.state_changed.emit(STATE_IDLE, "Done!")
+        QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
 
     def _check_transcription_timeout(self) -> None:
         """Check if transcription has timed out."""

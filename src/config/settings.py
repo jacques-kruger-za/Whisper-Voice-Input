@@ -45,6 +45,7 @@ class Settings:
             "commands_enabled": True,
             "custom_punctuation": {},
             "custom_commands": {},
+            "streaming_mode": False,
         }
 
     def _load(self) -> None:
@@ -223,6 +224,15 @@ class Settings:
     @custom_commands.setter
     def custom_commands(self, value: dict[str, str]) -> None:
         self.set("custom_commands", dict(value))
+
+    @property
+    def streaming_mode(self) -> bool:
+        """Real-time streaming transcription (vs record-then-batch)."""
+        return bool(self._settings.get("streaming_mode", False))
+
+    @streaming_mode.setter
+    def streaming_mode(self, value: bool) -> None:
+        self.set("streaming_mode", bool(value))
 
 
 # Global settings instance
