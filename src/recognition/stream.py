@@ -27,6 +27,7 @@ Design notes:
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections import deque
@@ -53,6 +54,114 @@ class StreamSegment:
     end: float
 
 
+# Strip leading/trailing punctuation for word equality during agreement.
+# Whisper's output varies (",", ".", capitalisation) across rounds even on
+# identical audio — normalising lets us compare at the lexical level while
+# still emitting the model's chosen punctuation in the committed text.
+_WORD_NORM_RE = re.compile(r"[^\w']+", re.UNICODE)
+
+
+def _normalise_word(w: str) -> str:
+    return _WORD_NORM_RE.sub("", w).lower()
+
+
+class CommitTracker:
+    """LocalAgreement-K commit logic over per-round word sequences.
+
+    A word is *committed* the first time it appears at the same position
+    (relative to the committed prefix) in K consecutive rounds. Until
+    committed, words are *tentative* — visible to the UI but not injected.
+
+    Algorithm per update():
+      1. Align: find the longest suffix of the committed text that is a
+         prefix of the new round. That overlap is the part of the audio
+         we've already finalised; everything after is "new content".
+      2. Within the new content, compute the longest common prefix with
+         the previous round's new content (case- & punctuation-insensitive).
+      3. That common prefix advances commitment. Anything beyond is tentative.
+
+    K is fixed at 2 for v1 — well-supported in the literature for
+    streaming Whisper and avoids the latency hit of K=3.
+
+    Caveats:
+      - Word-level only; we don't track per-token timestamps. This is
+        sufficient for dictation-length sessions where the rolling
+        window typically still contains the start of the utterance.
+      - When the window slides past previously committed audio, alignment
+        falls through to 0 (no overlap) and we restart agreement from
+        scratch on the new content. Safe but conservative.
+    """
+
+    def __init__(self) -> None:
+        self._committed_words: list[str] = []
+        # Store the full previous round, not just its "new content" — the
+        # committed prefix grows between rounds, so we have to recompute
+        # each round's post-commit slice against the LATEST committed state.
+        self._prev_round_words: list[str] = []
+
+    @property
+    def committed_text(self) -> str:
+        return " ".join(self._committed_words)
+
+    def reset(self) -> None:
+        self._committed_words.clear()
+        self._prev_round_words.clear()
+
+    def update(self, round_words: list[str]) -> tuple[str, str]:
+        """Feed one round's words; return (newly_committed, tentative)."""
+        if not round_words:
+            self._prev_round_words = []
+            return ("", "")
+
+        # New content for THIS round: trim the committed-prefix overlap
+        new_content = round_words[self._align(round_words):]
+
+        # New content for the PREVIOUS round, computed against the SAME
+        # committed state so the two slices are directly comparable.
+        prev_new_content = self._prev_round_words[self._align(self._prev_round_words):]
+
+        # LocalAgreement: words that agreed across two consecutive rounds
+        common = self._common_prefix(new_content, prev_new_content)
+
+        # Commit using the CURRENT round's casing/punctuation
+        newly_committed_words = new_content[: len(common)]
+        if newly_committed_words:
+            self._committed_words.extend(newly_committed_words)
+
+        tentative_words = new_content[len(common):]
+
+        # Stash full round for next call
+        self._prev_round_words = round_words
+
+        return (" ".join(newly_committed_words), " ".join(tentative_words))
+
+    def _align(self, round_words: list[str]) -> int:
+        """Index in round_words where 'new content' begins.
+
+        Returns the size of the matched committed-tail / round-head.
+        """
+        if not self._committed_words:
+            return 0
+        committed_norm = [_normalise_word(w) for w in self._committed_words]
+        round_norm = [_normalise_word(w) for w in round_words]
+        max_k = min(len(committed_norm), len(round_norm))
+        for k in range(max_k, 0, -1):
+            if round_norm[:k] == committed_norm[-k:]:
+                return k
+        return 0
+
+    @staticmethod
+    def _common_prefix(a: list[str], b: list[str]) -> list[str]:
+        """Longest common prefix using normalised comparison."""
+        out: list[str] = []
+        for x, y in zip(a, b):
+            if _normalise_word(x) == _normalise_word(y) and _normalise_word(x):
+                out.append(x)
+            else:
+                break
+        return out
+
+
 class _RecognizerProtocol(Protocol):
     def transcribe_array(
         self,
@@ -77,6 +186,8 @@ class StreamingTranscriber:
         initial_prompt: str | None = None,
         vad_min_silence_ms: int = 500,
         on_segments: Callable[[list[StreamSegment]], None] | None = None,
+        on_committed: Callable[[str], None] | None = None,
+        on_tentative: Callable[[str], None] | None = None,
     ) -> None:
         self._recognizer = recognizer
         self._sample_rate = sample_rate
@@ -86,12 +197,17 @@ class StreamingTranscriber:
         self._initial_prompt = initial_prompt
         self._vad_min_silence_ms = vad_min_silence_ms
         self._on_segments = on_segments
+        self._on_committed = on_committed  # called with newly-committed text per round
+        self._on_tentative = on_tentative  # called with current tentative tail per round
 
         # Buffer of float32 chunks; protected by lock.
         self._chunks: deque[np.ndarray] = deque()
         self._buffer_samples = 0  # cached total length, kept in sync with deque
         self._max_samples = int(self._sample_rate * self._window_seconds * 1.5)
         self._lock = threading.Lock()
+
+        # Commit tracker (LocalAgreement-K word-prefix)
+        self._commit_tracker = CommitTracker()
 
         # Worker control
         self._worker: threading.Thread | None = None
@@ -104,6 +220,7 @@ class StreamingTranscriber:
             return
         self._stop_event.clear()
         self._round = 0
+        self._commit_tracker.reset()
         self._worker = threading.Thread(
             target=self._run,
             name="StreamingTranscriber",
@@ -146,17 +263,23 @@ class StreamingTranscriber:
             old = self._chunks.popleft()
             self._buffer_samples -= old.size
 
+    # Minimum buffered audio before we even attempt a transcription round.
+    # Whisper hallucinates aggressively on very short clips and the
+    # LocalAgreement K=2 commit can lock in a hallucination if the model
+    # produces the SAME garbage twice. 1.5s gives the audio enough body
+    # that real-speech rounds dominate over hallucinations.
+    _MIN_BUFFER_SECONDS = 1.5
+
     def _snapshot_window(self) -> np.ndarray | None:
         """Concatenate the last window_seconds of audio into a single array.
 
-        Returns None if there isn't enough audio yet to bother transcribing
-        (less than 0.5 seconds — under VAD's min_speech_duration anyway).
+        Returns None if there isn't enough audio yet (under
+        ``_MIN_BUFFER_SECONDS``) — better latency floor than commit risk.
         """
         target = int(self._sample_rate * self._window_seconds)
         with self._lock:
-            if self._buffer_samples < int(self._sample_rate * 0.5):
+            if self._buffer_samples < int(self._sample_rate * self._MIN_BUFFER_SECONDS):
                 return None
-            # Cheapest: concatenate everything, then slice tail.
             joined = np.concatenate(list(self._chunks))
         if joined.size > target:
             joined = joined[-target:]
@@ -206,3 +329,21 @@ class StreamingTranscriber:
                     self._on_segments(segments)
                 except Exception as e:
                     logger.exception("on_segments callback raised: %s", e)
+
+            # LocalAgreement commit pass: turn flickery rounds into stable text.
+            round_text = " ".join(s.text for s in segments).strip()
+            round_words = round_text.split() if round_text else []
+            newly_committed, tentative = self._commit_tracker.update(round_words)
+
+            if newly_committed:
+                logger.info("Committed: %r", newly_committed)
+                if self._on_committed:
+                    try:
+                        self._on_committed(newly_committed)
+                    except Exception as e:
+                        logger.exception("on_committed raised: %s", e)
+            if self._on_tentative:
+                try:
+                    self._on_tentative(tentative)
+                except Exception as e:
+                    logger.exception("on_tentative raised: %s", e)

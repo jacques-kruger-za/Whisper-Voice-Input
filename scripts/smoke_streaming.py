@@ -40,12 +40,21 @@ def main(wav_path: Path) -> None:
         return
 
     rounds_seen = []
+    committed_log: list[str] = []
+    last_tentative = [""]
 
     def on_segments(segs):
         rounds_seen.append(segs)
-        print(f"  round {len(rounds_seen)}: {len(segs)} segments")
-        for s in segs:
-            print(f"    [{s.start:5.2f}-{s.end:5.2f}] {s.text!r}")
+        print(f"  round {len(rounds_seen)}: {len(segs)} segs")
+
+    def on_committed(text):
+        committed_log.append(text)
+        print(f"    >>> COMMIT: {text!r}")
+
+    def on_tentative(text):
+        last_tentative[0] = text
+        if text:
+            print(f"    ...tent: {text!r}")
 
     streamer = StreamingTranscriber(
         recognizer,
@@ -54,6 +63,8 @@ def main(wav_path: Path) -> None:
         interval_seconds=1.0,
         language="en",
         on_segments=on_segments,
+        on_committed=on_committed,
+        on_tentative=on_tentative,
     )
 
     print("Starting streaming...")
@@ -71,8 +82,9 @@ def main(wav_path: Path) -> None:
 
     streamer.stop()
     print(f"\nTotal rounds: {len(rounds_seen)}")
-    if rounds_seen:
-        print("Last round text:", " ".join(s.text for s in rounds_seen[-1]))
+    print(f"Committed deltas: {len(committed_log)}")
+    print(f"Final committed: {' '.join(committed_log)!r}")
+    print(f"Final tentative: {last_tentative[0]!r}")
 
 
 if __name__ == "__main__":
