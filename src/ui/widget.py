@@ -4,6 +4,7 @@ import math
 import os
 import random
 import sys
+from collections import deque
 from PyQt6.QtWidgets import QWidget, QApplication, QLabel, QVBoxLayout
 from PyQt6.QtCore import Qt, QPoint, QTimer, pyqtSignal, QRectF, QPointF
 from PyQt6.QtGui import (
@@ -11,6 +12,14 @@ from PyQt6.QtGui import (
     QPainterPath, QPaintEvent, QMouseEvent, QEnterEvent, QFont,
     QLinearGradient, QPixmap
 )
+
+
+# Recording-state visualization: rolling volume strip extending left of circle.
+# Strip width = BAR_STRIP_MULTIPLIER × circle width. Captures AUDIO_HISTORY_SECONDS
+# of samples at NUM_BARS resolution; render fades to transparent on the left edge.
+BAR_STRIP_MULTIPLIER = 2
+AUDIO_HISTORY_SECONDS = 5.0
+NUM_BARS = 60
 
 
 def get_assets_dir() -> str:
@@ -264,7 +273,7 @@ class FloatingWidget(QWidget):
         self._total_drag_distance = 0
 
         # Animation state
-        self._pulse_rings: list[PulseRing] = []
+        self._pulse_rings: list[PulseRing] = []  # retained but unused (legacy)
         self._glow_intensity = 0.0
         self._breathing_scale = 1.0
         self._breathing_direction = 1
@@ -273,6 +282,18 @@ class FloatingWidget(QWidget):
         self._idle_border_width = 2.5
         self._error_flash_alpha = 0
         self._rotation_offset = 0.0  # Slow rotation for visual interest
+
+        # Recording bar strip — rolling 5s of volume samples (newest = right)
+        self._audio_history: deque[float] = deque([0.0] * NUM_BARS, maxlen=NUM_BARS)
+        self._sample_accumulator = 0.0
+        # ms-per-sample: spread NUM_BARS evenly across AUDIO_HISTORY_SECONDS
+        self._sample_period_ms = AUDIO_HISTORY_SECONDS * 1000.0 / NUM_BARS
+        self._sample_timer = QTimer(self)
+        self._sample_timer.timeout.connect(self._sample_audio_for_strip)
+
+        # Pulse phases (separate from legacy breathing/pulse-ring system)
+        self._red_dot_phase = 0.0       # 0..1 looping; recording centre dot
+        self._yellow_pulse_phase = 0.0  # 0..1 looping; processing whole-widget pulse
 
         # Tooltip (commented out - may use for onboarding later)
         # self._tooltip = InfoTooltip()
@@ -295,7 +316,12 @@ class FloatingWidget(QWidget):
         self._animation_timer.start(16)  # ~60fps
 
     def _setup_ui(self) -> None:
-        """Initialize the widget."""
+        """Initialize the widget.
+
+        Layout: bounding rect is (1 + BAR_STRIP_MULTIPLIER) × circle wide. The
+        circle sits on the right of the bounding rect; the bar strip occupies
+        the left portion and only paints during recording.
+        """
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -303,7 +329,8 @@ class FloatingWidget(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMouseTracking(True)
-        self.setFixedSize(self._size, self._size)
+        total_width = self._size * (1 + BAR_STRIP_MULTIPLIER)
+        self.setFixedSize(total_width, self._size)
         self.setWindowOpacity(WIDGET_OPACITY)
 
         self._init_visualizers()
@@ -330,11 +357,16 @@ class FloatingWidget(QWidget):
         self._pulse_rings = [PulseRing() for _ in range(3)]
 
     def _position_top_right(self) -> None:
-        """Position widget in top-right corner."""
+        """Position widget so the CIRCLE sits at top-right of screen.
+
+        The widget's bounding rect now extends left for the bar strip, so we
+        offset by total width to keep the visible circle anchored to the
+        screen edge.
+        """
         screen = QApplication.primaryScreen()
         if screen:
             geometry = screen.availableGeometry()
-            x = geometry.width() - self._size - 20
+            x = geometry.width() - self.width() - 20
             y = 80
             self.move(x, y)
 
@@ -347,8 +379,8 @@ class FloatingWidget(QWidget):
             new_x = pos.x()
             new_y = pos.y()
 
-            if new_x + self._size > geometry.width():
-                new_x = geometry.width() - self._size - 10
+            if new_x + self.width() > geometry.width():
+                new_x = geometry.width() - self.width() - 10
             if new_y + self._size > geometry.height():
                 new_y = geometry.height() - self._size - 10
             if new_x < 0:
@@ -360,12 +392,17 @@ class FloatingWidget(QWidget):
                 self.move(new_x, new_y)
 
     def set_size(self, size_key: str) -> None:
-        """Change widget size."""
+        """Change widget size, keeping the CIRCLE position stable."""
         if size_key in WIDGET_SIZES:
+            # Preserve the circle's right edge before resize
+            old_circle_right = self.x() + self.width()
             self._size_key = size_key
             self._size = WIDGET_SIZES[size_key]
             self._thickness_scale = THICKNESS_SCALE.get(size_key, 1.0)
-            self.setFixedSize(self._size, self._size)
+            total_width = self._size * (1 + BAR_STRIP_MULTIPLIER)
+            self.setFixedSize(total_width, self._size)
+            # Re-anchor: new x = old_right - new_total_width
+            self.move(old_circle_right - total_width, self.y())
             self._init_visualizers()
             self._ensure_on_screen()
             self.update()
@@ -399,30 +436,13 @@ class FloatingWidget(QWidget):
         self._smoothed_audio += (self._audio_level - self._smoothed_audio) * 0.15
 
         if self._state == STATE_RECORDING:
-            # Update animation time for phase effects
-            self._animation_time += 0.1
-
-            # Update vertical audio bars
-            for bar in self._vertical_bars:
-                bar.update(self._audio_level, self._animation_time)
-
-            # Update pulse rings
-            for ring in self._pulse_rings:
-                if ring.active:
-                    ring.update(0.025 + self._audio_level * 0.02)
-
-            # Update glow intensity
-            self._glow_intensity = 0.5 + self._smoothed_audio * 0.5
-
+            # Advance red-dot phase: ~1.2 cycles per second at 60fps
+            self._red_dot_phase = (self._red_dot_phase + 0.020) % 1.0
             needs_update = True
 
-        # Update breathing animation (processing)
+        # Yellow pulse during processing — slower than recording dot
         if self._state == STATE_PROCESSING:
-            self._breathing_scale += self._breathing_direction * 0.008
-            if self._breathing_scale >= 1.25:
-                self._breathing_direction = -1
-            elif self._breathing_scale <= 1.0:
-                self._breathing_direction = 1
+            self._yellow_pulse_phase = (self._yellow_pulse_phase + 0.015) % 1.0
             needs_update = True
 
         # Update idle glow
@@ -451,42 +471,105 @@ class FloatingWidget(QWidget):
         self.update()
 
     def paintEvent(self, event: QPaintEvent) -> None:
-        """Draw the circular widget with visualizations."""
+        """Draw the bar strip + circle widget."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        center = QPointF(self._size / 2, self._size / 2)
-        radius = (self._size / 2) - 4
+        # Circle is right-anchored within bounding rect
+        circle_size = self._size
+        cx = self.width() - circle_size / 2
+        cy = circle_size / 2
+        center = QPointF(cx, cy)
+        radius = (circle_size / 2) - 4
 
-        # Recording visualizations (behind main content)
+        # Bar strip lives to the LEFT of the circle, only during recording
         if self._state == STATE_RECORDING:
-            self._draw_outer_glow(painter, center, radius)
-            self._draw_pulse_rings(painter, center, radius)
+            self._draw_bar_strip(painter, circle_size)
 
-        # Draw main circle background
+        # Circle background + border
         self._draw_background(painter, center, radius)
-
-        # Draw border
         self._draw_border(painter, center, radius)
 
-        # Draw condenser microphone icon
-        self._draw_condenser_mic(painter, center)
-
-        # Draw vertical audio bars overlaid on mic (recording state only)
         if self._state == STATE_RECORDING:
-            self._draw_vertical_audio_bars(painter, center)
-
-        # Draw processing glow
-        if self._state == STATE_PROCESSING:
-            self._draw_processing_glow(painter, center, radius)
-
-        # Draw idle glow effect
-        if self._state == STATE_IDLE:
+            # Pulsing red dot in centre — replaces mic icon, pulse rings, vertical bars
+            self._draw_recording_dot(painter, center, radius)
+        elif self._state == STATE_PROCESSING:
+            # Whole-circle yellow pulse — replaces breathing animation
+            self._draw_processing_pulse(painter, center, radius)
+        elif self._state == STATE_IDLE:
+            # Idle: keep the mic icon and subtle glow
             self._draw_idle_glow(painter, center, radius)
+            self._draw_condenser_mic(painter, center)
+        elif self._state == STATE_ERROR:
+            self._draw_condenser_mic(painter, center)
 
-        # Draw error flash overlay
+        # Error flash overlay (any state)
         if self._error_flash_alpha > 0:
             self._draw_error_flash(painter, center, radius)
+
+    def _draw_bar_strip(self, painter: QPainter, circle_size: int) -> None:
+        """Render rolling 5-second volume strip extending LEFT of the circle.
+
+        Newest sample is at the right (touching the circle); oldest at the
+        left, faded to transparent. Each bar's height encodes the audio level
+        captured at that point in time.
+        """
+        strip_width = circle_size * BAR_STRIP_MULTIPLIER
+        strip_left = 0.0
+        strip_right = strip_width  # right edge of strip = left edge of circle bbox
+        strip_height = circle_size
+        center_y = strip_height / 2
+
+        # Each bar gets equal horizontal slice
+        bar_slot = strip_width / NUM_BARS
+        bar_thickness = max(2.0, bar_slot * 0.6)
+        max_half_height = (strip_height / 2) - 4
+
+        base_color = QColor(COLOR_WIDGET_RECORDING)
+        history = list(self._audio_history)  # snapshot to avoid mid-paint mutation
+
+        for i, level in enumerate(history):
+            if level <= 0.02:
+                continue
+            # i=0 oldest → leftmost; i=NUM_BARS-1 newest → rightmost (next to circle)
+            x = strip_left + (i + 0.5) * bar_slot
+            half_h = clamp(level, 0.0, 1.0) * max_half_height
+            # Linear fade: opacity ramps from 0 at left edge to 1 at the circle
+            fade = (i + 1) / NUM_BARS
+            color = QColor(base_color)
+            color.setAlphaF(0.85 * fade)
+            pen = QPen(color, bar_thickness, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.drawLine(
+                QPointF(x, center_y - half_h),
+                QPointF(x, center_y + half_h),
+            )
+
+    def _draw_recording_dot(self, painter: QPainter, center: QPointF, radius: float) -> None:
+        """Pulsing centre dot during recording. Color matches recording state."""
+        # Pulse 0..1 → scale 0.6..1.0, alpha 0.55..1.0
+        pulse = 0.5 - 0.5 * math.cos(self._red_dot_phase * 2 * math.pi)
+        scale = 0.6 + 0.4 * pulse
+        alpha = 0.55 + 0.45 * pulse
+
+        dot_radius = radius * 0.32 * scale
+        color = QColor(COLOR_WIDGET_RECORDING)
+        color.setAlphaF(alpha)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        painter.drawEllipse(center, dot_radius, dot_radius)
+
+    def _draw_processing_pulse(self, painter: QPainter, center: QPointF, radius: float) -> None:
+        """Whole-circle yellow pulse during processing — replaces breathing anim."""
+        pulse = 0.5 - 0.5 * math.cos(self._yellow_pulse_phase * 2 * math.pi)
+        alpha = 0.30 + 0.55 * pulse  # 0.30..0.85
+
+        color = QColor(COLOR_WIDGET_PROCESSING)
+        color.setAlphaF(alpha)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        # Slightly inset from border so the border itself stays crisp
+        painter.drawEllipse(center, radius - 1, radius - 1)
 
     def _draw_outer_glow(self, painter: QPainter, center: QPointF, radius: float) -> None:
         """Draw intense outer glow during recording."""
@@ -651,34 +734,32 @@ class FloatingWidget(QWidget):
         self._state = state
 
         if state == STATE_RECORDING:
-            if not self._pulse_timer.isActive():
-                self._pulse_timer.start(400)
-            # Reset vertical audio bars
-            if hasattr(self, '_vertical_bars'):
-                for bar in self._vertical_bars:
-                    bar.current_height = bar.min_height
-                    bar.velocity = 0
-            if hasattr(self, '_animation_time'):
-                self._animation_time = 0.0
+            # Start the rolling-strip sampler. ~30Hz captures 5s × 30 = 150 samples;
+            # we keep NUM_BARS in the deque, so older samples drop off naturally.
+            self._audio_history = deque([0.0] * NUM_BARS, maxlen=NUM_BARS)
+            self._red_dot_phase = 0.0
+            if not self._sample_timer.isActive():
+                self._sample_timer.start(int(self._sample_period_ms))
         else:
-            self._pulse_timer.stop()
-            for ring in self._pulse_rings:
-                ring.active = False
-            # Reset vertical bars to minimum when not recording
-            if hasattr(self, '_vertical_bars'):
-                for bar in self._vertical_bars:
-                    bar.current_height = bar.min_height
-                    bar.velocity = 0
+            self._sample_timer.stop()
 
         if state == STATE_ERROR:
             self._error_flash_alpha = 180
             self._error_timer.start(800)
 
         if state == STATE_PROCESSING:
-            self._breathing_scale = 1.0
-            self._breathing_direction = 1
+            self._yellow_pulse_phase = 0.0
 
         self.update()
+
+    def _sample_audio_for_strip(self) -> None:
+        """Push current smoothed audio level onto the rolling history (right side).
+
+        Called by the sample timer at ~NUM_BARS / AUDIO_HISTORY_SECONDS Hz.
+        Newest sample = right edge of strip = touching the circle.
+        """
+        # Use smoothed audio so a single noisy frame doesn't spike a single bar
+        self._audio_history.append(self._smoothed_audio)
 
     def set_audio_level(self, level: float) -> None:
         """Update audio level for reactive animations."""
