@@ -326,12 +326,18 @@ class VoiceInputApp(QObject):
     def _on_hotkey_pressed(self) -> None:
         """Handle hotkey press (from hotkey thread).
 
-        Captures the foreground window BEFORE scheduling to the main thread,
-        because the hotkey fires while the target app still has focus.
-        Uses pyqtSignal (not QTimer) for reliable cross-thread dispatch.
+        Captures an EXTERNAL foreground window — never our own. If the user
+        clicked our widget/callout before pressing the hotkey, the raw
+        foreground HWND would be ours, and we'd later 'restore' focus to
+        ourselves and paste into nothing. Fix: filter by process ID, and
+        fall back to the polled tracker's last external HWND.
         """
-        hwnd = save_foreground_window()
-        logger.info("Hotkey pressed, saved HWND=%s, emitting signal to main thread", hwnd)
+        hwnd = get_foreground_window_if_external()
+        if not hwnd:
+            hwnd = self._last_external_hwnd
+            logger.info("Hotkey: foreground was self, using tracked HWND=%s", hwnd)
+        else:
+            logger.info("Hotkey pressed, saved HWND=%s", hwnd)
         self._hotkey_signal.emit(hwnd)
 
     def _on_widget_clicked(self) -> None:
