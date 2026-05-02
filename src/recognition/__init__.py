@@ -6,6 +6,7 @@ from .whisper_api import APIWhisperRecognizer
 from .cleanup import cleanup_text, add_punctuation
 from .commands import CommandResult, classify_transcription
 from .command_processor import CommandProcessor
+from .stream import StreamingTranscriber, StreamSegment
 
 __all__ = [
     "BaseRecognizer",
@@ -17,4 +18,6 @@ __all__ = [
     "CommandResult",
     "classify_transcription",
     "CommandProcessor",
+    "StreamingTranscriber",
+    "StreamSegment",
 ]
