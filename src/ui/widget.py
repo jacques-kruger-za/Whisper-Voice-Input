@@ -819,6 +819,13 @@ class FloatingWidget(QWidget):
         return (pos.x(), pos.y())
 
     def restore_position(self, position: tuple[int, int] | None) -> None:
-        """Restore saved position."""
+        """Restore saved position, clamping to screen bounds.
+
+        Saved positions from the pre-bar-strip layout assume a circle-only
+        widget. After upgrade, the widget is wider, so a saved x near the
+        screen's right edge can leave the new widget partly or fully
+        off-screen. Always re-clamp via _ensure_on_screen.
+        """
         if position:
             self.move(position[0], position[1])
+        self._ensure_on_screen()
