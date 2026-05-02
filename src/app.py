@@ -420,11 +420,20 @@ class VoiceInputApp(QObject):
                 recognizer = self._local_recognizer
                 recognizer.set_model(self._settings.model)
 
+            # Build initial_prompt from custom vocabulary (if enabled)
+            initial_prompt = None
+            if self._settings.vocabulary_enabled:
+                vocab = self._settings.custom_vocabulary
+                if vocab:
+                    initial_prompt = ", ".join(vocab)
+                    logger.debug("Vocabulary enabled: %d words", len(vocab))
+
             # Transcribe with segment streaming
             logger.debug("Transcribing audio with language: %s", self._settings.language)
             result = recognizer.transcribe(
                 audio_path, self._settings.language,
                 segment_callback=self._emit_segment,
+                initial_prompt=initial_prompt,
             )
             logger.debug("Transcription result: %s", result)
 

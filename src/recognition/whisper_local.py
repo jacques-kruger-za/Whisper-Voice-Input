@@ -58,7 +58,8 @@ class LocalWhisperRecognizer(BaseRecognizer):
             self._model = None
 
     def transcribe(self, audio_path: Path, language: str | None = None,
-                   segment_callback=None) -> RecognitionResult:
+                   segment_callback=None,
+                   initial_prompt: str | None = None) -> RecognitionResult:
         """Transcribe audio file using Faster-Whisper.
 
         Args:
@@ -66,6 +67,9 @@ class LocalWhisperRecognizer(BaseRecognizer):
             language: Language code or None for auto-detect.
             segment_callback: Optional callable(str) invoked with each segment's
                 text as it becomes available (for streaming UI updates).
+            initial_prompt: Optional vocabulary hint passed to Whisper to bias
+                transcription toward custom words/phrases. Truncated to 224
+                characters to stay within Whisper's prompt token budget.
         """
         logger.debug("Starting transcription of '%s' (language=%s)", audio_path, language)
 
@@ -85,6 +89,13 @@ class LocalWhisperRecognizer(BaseRecognizer):
                 # Strip region suffix for Whisper (en-US -> en)
                 lang = language.split("-")[0] if "-" in language else language
 
+            prompt = None
+            if initial_prompt:
+                prompt = initial_prompt[:224]
+                if len(initial_prompt) > 224:
+                    logger.warning("initial_prompt truncated from %d to 224 chars", len(initial_prompt))
+                logger.info("Using initial_prompt (%d chars): %s", len(prompt), prompt)
+
             logger.debug("Calling Whisper transcribe with language=%s", lang)
 
             # Transcribe
@@ -96,6 +107,7 @@ class LocalWhisperRecognizer(BaseRecognizer):
                 temperature=0.0,
                 condition_on_previous_text=True,
                 vad_filter=True,  # Filter out non-speech
+                initial_prompt=prompt,
             )
 
             # Collect text from segments, streaming each to callback

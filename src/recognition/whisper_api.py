@@ -34,7 +34,8 @@ class APIWhisperRecognizer(BaseRecognizer):
         return self._client
 
     def transcribe(self, audio_path: Path, language: str | None = None,
-                   segment_callback=None) -> RecognitionResult:
+                   segment_callback=None,
+                   initial_prompt: str | None = None) -> RecognitionResult:
         """Transcribe audio file using OpenAI Whisper API.
 
         Args:
@@ -42,6 +43,8 @@ class APIWhisperRecognizer(BaseRecognizer):
             language: Language code or None for auto-detect.
             segment_callback: Optional callable(str) invoked with the full text
                 once available (API does not support per-segment streaming).
+            initial_prompt: Optional vocabulary hint passed as `prompt` to the
+                Whisper API to bias transcription. Truncated to 224 chars.
         """
         logger.debug("Starting API transcription of '%s' (language=%s)", audio_path, language)
 
@@ -76,6 +79,12 @@ class APIWhisperRecognizer(BaseRecognizer):
                 }
                 if lang:
                     kwargs["language"] = lang
+                if initial_prompt:
+                    prompt = initial_prompt[:224]
+                    if len(initial_prompt) > 224:
+                        logger.warning("initial_prompt truncated from %d to 224 chars", len(initial_prompt))
+                    kwargs["prompt"] = prompt
+                    logger.info("Using initial_prompt (%d chars): %s", len(prompt), prompt)
 
                 logger.debug("Calling OpenAI API with model=%s, language=%s", kwargs["model"], lang)
                 transcript = client.audio.transcriptions.create(**kwargs)
