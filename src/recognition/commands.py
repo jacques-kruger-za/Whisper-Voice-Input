@@ -1,11 +1,26 @@
-"""Voice command detection and classification."""
+"""Voice command classification with wake-word prefix.
+
+Commands are unambiguously triggered by the wake word (default "command")
+followed by the command phrase. Anything else is dictation. This eliminates
+fuzzy-match false positives — the prefix is the gate, fuzzy matching only
+forgives small mishearings of the command word itself ("undue" → "undo").
+"""
+
+import re
 
 from rapidfuzz import fuzz
 
-from src.config.constants import COMMAND_DEFINITIONS, COMMAND_THRESHOLD
+from src.config.constants import (
+    COMMAND_DEFINITIONS, COMMAND_THRESHOLD, COMMAND_WAKE_WORD,
+)
 from ..config import get_logger
 
 logger = get_logger(__name__)
+
+_WAKE_WORD_RE = re.compile(
+    r"^\s*" + re.escape(COMMAND_WAKE_WORD) + r"\b[\s,.:;!?-]*",
+    re.IGNORECASE,
+)
 
 
 class CommandResult:
@@ -14,20 +29,20 @@ class CommandResult:
     def __init__(
         self,
         command_phrase: str,
-        action: str,
+        keystroke: str,
         confidence: float,
         original_text: str,
     ):
         self.command_phrase = command_phrase
-        self.action = action
+        self.keystroke = keystroke
         self.confidence = confidence
         self.original_text = original_text
-        self.success = bool(command_phrase and action)
+        self.success = bool(command_phrase and keystroke)
 
     def __repr__(self) -> str:
         return (
             f"CommandResult(phrase={self.command_phrase!r}, "
-            f"action={self.action!r}, confidence={self.confidence:.0f})"
+            f"keystroke={self.keystroke!r}, confidence={self.confidence:.0f})"
         )
 
 
@@ -35,61 +50,64 @@ def classify_transcription(
     text: str,
     threshold: int | None = None,
 ) -> tuple[str, CommandResult | None]:
-    """
-    Classify transcription as either a command or dictation.
+    """Classify transcription as command or dictation.
 
-    Uses fuzzy matching to detect voice commands from COMMAND_DEFINITIONS.
-    Returns a tuple of (classification_type, result) where classification_type
-    is either "command" or "dictation".
-
-    Args:
-        text: Transcribed text to classify
-        threshold: Fuzzy matching score threshold (0-100), defaults to COMMAND_THRESHOLD
-
-    Returns:
-        Tuple of ("command", CommandResult) if command detected
-        Tuple of ("dictation", None) if no command matched
+    Returns ("command", CommandResult) if text starts with the wake word
+    and the suffix fuzzy-matches a defined command above threshold.
+    Returns ("dictation", None) otherwise.
     """
     if threshold is None:
         threshold = COMMAND_THRESHOLD
 
-    # Normalize input text
-    normalized_text = text.strip().lower()
-
-    logger.debug(f"Classifying transcription: {text!r} (normalized: {normalized_text!r})")
-
-    if not normalized_text:
-        logger.debug("Empty text, classifying as dictation")
+    if not text or not text.strip():
         return ("dictation", None)
 
-    # Check each defined command
-    best_match = None
+    # Strip whisper's leading-space convention and trailing punctuation
+    # (cleanup hasn't run yet, so utterances often end with "." from Whisper).
+    raw = text.strip().rstrip(".!?,;:")
+    match = _WAKE_WORD_RE.match(raw)
+    if not match:
+        logger.debug("No wake word in %r — dictation", text[:80])
+        return ("dictation", None)
+
+    suffix = raw[match.end():].strip().lower()
+    if not suffix:
+        logger.debug("Wake word with no command suffix — dictation")
+        return ("dictation", None)
+
+    # Fuzzy-match the suffix against known command phrases
+    best_phrase = None
+    best_info = None
     best_score = 0.0
-
-    for command_phrase, command_info in COMMAND_DEFINITIONS.items():
-        # Calculate similarity score using RapidFuzz (0-100 scale)
-        score = fuzz.ratio(normalized_text, command_phrase.lower())
-
+    for phrase, info in COMMAND_DEFINITIONS.items():
+        score = fuzz.ratio(suffix, phrase.lower())
         if score > best_score:
             best_score = score
-            best_match = (command_phrase, command_info)
+            best_phrase = phrase
+            best_info = info
 
-    # Check if best match exceeds threshold
-    if best_match and best_score >= threshold:
-        command_phrase, command_info = best_match
+    if best_phrase and best_score >= threshold:
         logger.info(
-            f"Command detected: {command_phrase!r} "
-            f"(confidence={best_score:.0f}, threshold={threshold})"
+            "Command detected: %r -> %r (confidence=%.0f)",
+            best_phrase, best_info["keystroke"], best_score,
         )
-        result = CommandResult(
-            command_phrase=command_phrase,
-            action=command_info["action"],
+        return ("command", CommandResult(
+            command_phrase=best_phrase,
+            keystroke=best_info["keystroke"],
             confidence=best_score,
             original_text=text,
-        )
-        return ("command", result)
+        ))
 
-    logger.debug(
-        f"No command match (best_score={best_score:.0f}, threshold={threshold})"
+    logger.info(
+        "Wake word matched but no command (suffix=%r, best=%r score=%.0f) — discarding",
+        suffix, best_phrase, best_score,
     )
-    return ("dictation", None)
+    # Wake word present but no matching command — return as command with
+    # empty keystroke so the app can show "unknown command" rather than
+    # injecting the literal text "command save us all".
+    return ("command", CommandResult(
+        command_phrase=f"unknown ({suffix})",
+        keystroke="",
+        confidence=best_score,
+        original_text=text,
+    ))

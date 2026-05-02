@@ -41,8 +41,8 @@ class Settings:
             "widget_size": DEFAULT_WIDGET_SIZE,
             "first_run": True,
             "custom_vocabulary": [],
-            "vocabulary_enabled": True,
             "command_threshold": 80,
+            "commands_enabled": True,
         }
 
     def _load(self) -> None:
@@ -185,15 +185,6 @@ class Settings:
         self.set("custom_vocabulary", value)
 
     @property
-    def vocabulary_enabled(self) -> bool:
-        """Get vocabulary enhancement enabled setting."""
-        return self._settings.get("vocabulary_enabled", True)
-
-    @vocabulary_enabled.setter
-    def vocabulary_enabled(self, value: bool) -> None:
-        self.set("vocabulary_enabled", value)
-
-    @property
     def command_threshold(self) -> int:
         """Get fuzzy command-matching threshold (70-90)."""
         return int(self._settings.get("command_threshold", 80))
@@ -201,6 +192,15 @@ class Settings:
     @command_threshold.setter
     def command_threshold(self, value: int) -> None:
         self.set("command_threshold", int(value))
+
+    @property
+    def commands_enabled(self) -> bool:
+        """Whether voice commands fire (master toggle for the wake-word path)."""
+        return bool(self._settings.get("commands_enabled", True))
+
+    @commands_enabled.setter
+    def commands_enabled(self, value: bool) -> None:
+        self.set("commands_enabled", bool(value))
 
 
 # Global settings instance

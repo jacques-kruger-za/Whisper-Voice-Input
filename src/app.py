@@ -246,8 +246,17 @@ class VoiceInputApp(QObject):
         self._timeout_timer.stop()
         self._processing = False
 
+        # Reject commands with no keystroke (wake-word matched, no command suffix)
+        if not cmd_result.keystroke:
+            logger.info("Unknown command: %s", cmd_result.command_phrase)
+            self._callout.set_final_text(f"⚡ Unknown: {cmd_result.command_phrase}")
+            self._saved_hwnd = None
+            self.state_changed.emit(STATE_IDLE, f"Unknown command")
+            QTimer.singleShot(2000, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
+            return
+
         # Show what was detected in the callout
-        self._callout.set_final_text(f"⚡ {cmd_result.command_phrase}")
+        self._callout.set_final_text(f"⚡ {cmd_result.command_phrase} → {cmd_result.keystroke}")
 
         hwnd = self._saved_hwnd
         self._saved_hwnd = None
@@ -263,7 +272,7 @@ class VoiceInputApp(QObject):
     def _execute_command_after_focus(self, cmd_result) -> None:
         """Execute command after focus settles (UI thread, called via QTimer)."""
         ok = self._command_processor.execute_command(cmd_result)
-        msg = f"Done! ({cmd_result.action})" if ok else "Command failed"
+        msg = f"Done! ({cmd_result.command_phrase})" if ok else "Command failed"
         self.state_changed.emit(STATE_IDLE, msg)
         QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
 
@@ -453,13 +462,13 @@ class VoiceInputApp(QObject):
                 recognizer = self._local_recognizer
                 recognizer.set_model(self._settings.model)
 
-            # Build initial_prompt from custom vocabulary (if enabled)
+            # Build initial_prompt from custom vocabulary.
+            # Presence of words = active. Empty list = no prompt sent.
             initial_prompt = None
-            if self._settings.vocabulary_enabled:
-                vocab = self._settings.custom_vocabulary
-                if vocab:
-                    initial_prompt = ", ".join(vocab)
-                    logger.debug("Vocabulary enabled: %d words", len(vocab))
+            vocab = self._settings.custom_vocabulary
+            if vocab:
+                initial_prompt = ", ".join(vocab)
+                logger.debug("Custom vocabulary active: %d words", len(vocab))
 
             # Transcribe with segment streaming
             logger.debug("Transcribing audio with language: %s", self._settings.language)
@@ -479,18 +488,21 @@ class VoiceInputApp(QObject):
 
             if result.success:
                 # Classify raw text as command vs dictation BEFORE cleanup
-                # (cleanup adds punctuation/capitalization that can hurt fuzzy match)
-                classification, cmd_result = classify_transcription(
-                    result.text,
-                    threshold=self._settings.command_threshold,
-                )
+                # (cleanup adds punctuation/capitalization that can hurt fuzzy match).
+                # Skip classification entirely when commands are disabled.
+                if self._settings.commands_enabled:
+                    classification, cmd_result = classify_transcription(
+                        result.text,
+                        threshold=self._settings.command_threshold,
+                    )
+                else:
+                    classification, cmd_result = ("dictation", None)
                 if classification == "command" and cmd_result:
                     logger.info("Classified as command: %s", cmd_result)
                     self.command_detected.emit(cmd_result)
                 else:
                     # Clean up text and emit as dictation
                     text = cleanup_text(result.text)
-                    self._command_processor.track_dictation(text)
                     logger.info("Transcription successful")
                     self.transcription_complete.emit(text)
             else:

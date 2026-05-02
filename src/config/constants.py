@@ -95,36 +95,47 @@ FILLER_WORDS = [
     "basically", "actually", "literally", "so", "well",
 ]
 
-# Voice command definitions
+# Wake-word prefix that disambiguates commands from dictation.
+# Utterances starting with this word are routed to the command dispatcher;
+# everything else is dictation. Eliminates fuzzy-match false positives.
+COMMAND_WAKE_WORD = "command"
+
+# Editor commands: spoken phrase → OS keystroke string (pyautogui.hotkey format).
+# All entries are stateless, universal Windows shortcuts — they hand off to
+# whatever editor is focused, so we never corrupt user state.
 COMMAND_DEFINITIONS = {
-    "delete that": {
-        "action": "delete_last",
-        "description": "Remove the last dictated segment"
-    },
-    "undo": {
-        "action": "undo",
-        "description": "Reverse the last command or dictation action"
-    },
-    "new line": {
-        "action": "insert_newline",
-        "description": "Insert line break at cursor position"
-    },
+    "undo":       {"keystroke": "ctrl+z",  "description": "Undo last edit"},
+    "redo":       {"keystroke": "ctrl+y",  "description": "Redo last edit"},
+    "save":       {"keystroke": "ctrl+s",  "description": "Save current document"},
+    "select all": {"keystroke": "ctrl+a",  "description": "Select all"},
+    "copy":       {"keystroke": "ctrl+c",  "description": "Copy selection"},
+    "paste":      {"keystroke": "ctrl+v",  "description": "Paste"},
+    "cut":        {"keystroke": "ctrl+x",  "description": "Cut selection"},
+    "find":       {"keystroke": "ctrl+f",  "description": "Open find dialog"},
 }
 
-# Spoken punctuation word-to-symbol mapping
+# Spoken punctuation/whitespace word-to-symbol mapping.
+# Multi-word keys are matched first (longest-key-first) by the processor.
+# These run before filler-word removal in the cleanup pipeline.
 PUNCTUATION_WORDS = {
-    "period": ".",
-    "comma": ",",
-    "question mark": "?",
+    "new paragraph": "\n\n",
+    "new line": "\n",
     "exclamation mark": "!",
     "exclamation point": "!",
+    "question mark": "?",
+    "full stop": ".",
+    "period": ".",
+    "comma": ",",
     "colon": ":",
     "semicolon": ";",
     "dash": "—",
+    "hyphen": "-",
     "apostrophe": "'",
     "quote": '"',
-    "hyphen": "-",
 }
 
-# Command detection threshold (fuzzy matching score 0-100)
-COMMAND_THRESHOLD = 80
+# Command detection threshold (fuzzy matching score 0-100).
+# Used only to forgive minor mishearings of the command word itself
+# ("undue" -> "undo"). Wake-word prefix already eliminates ambiguity,
+# so this can be relatively lenient.
+COMMAND_THRESHOLD = 65

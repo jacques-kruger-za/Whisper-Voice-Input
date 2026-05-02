@@ -64,16 +64,19 @@ def process_spoken_punctuation(text: str) -> str:
             logger.debug(f"Replaced '{word}' with '{symbol}'")
         result = new_result
 
-    # Clean up spaces before punctuation
-    result = re.sub(r"\s+([.,!?;:—])", r"\1", result)
+    # Clean up horizontal whitespace before punctuation (preserve newlines)
+    result = re.sub(r"[ \t]+([.,!?;:—])", r"\1", result)
 
-    # Ensure space after punctuation (except at end)
+    # Ensure space after punctuation when followed by a letter
     result = re.sub(r"([.,!?;:—])([A-Za-z])", r"\1 \2", result)
 
-    # Clean up multiple spaces
-    result = re.sub(r"\s+", " ", result)
+    # Collapse runs of horizontal whitespace; leave \n alone
+    result = re.sub(r"[ \t]+", " ", result)
 
-    # Remove leading/trailing spaces
+    # Trim spaces around newlines so "word \n word" → "word\nword"
+    result = re.sub(r" *\n *", "\n", result)
+
+    # Remove leading/trailing whitespace from the whole string
     result = result.strip()
 
     if replacements_made > 0:

@@ -23,7 +23,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 
 from ..config import get_settings, WHISPER_MODELS, SUPPORTED_LANGUAGES, ENGINE_LOCAL, ENGINE_API, WIDGET_SIZES
-from ..config.constants import APP_NAME, APP_VERSION
+from ..config.constants import (
+    APP_NAME, APP_VERSION,
+    PUNCTUATION_WORDS, COMMAND_DEFINITIONS, COMMAND_WAKE_WORD,
+)
 from ..audio import AudioRecorder
 from ..input.hotkey import HotkeyCapture, hotkey_to_string
 from ..config.logging_config import get_logger
@@ -261,68 +264,95 @@ class SettingsWindow(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
 
-        # Custom vocabulary section
+        # ── Section 1: Custom Vocabulary (Whisper bias) ────────────────────
         vocab_group = QGroupBox("Custom Vocabulary")
         vocab_layout = QVBoxLayout(vocab_group)
 
-        vocab_desc = QLabel("Add custom words or technical terms to improve recognition accuracy.")
+        vocab_desc = QLabel(
+            "Proper nouns, names, jargon, or technical terms that Whisper "
+            "tends to mishear. These are passed as a hint to bias transcription "
+            "(e.g. 'Jacques', 'Anthropic', 'rapidfuzz')."
+        )
         vocab_desc.setWordWrap(True)
         vocab_desc.setStyleSheet("color: #888888;")
         vocab_layout.addWidget(vocab_desc)
 
-        # Vocabulary list with buttons
         list_layout = QHBoxLayout()
-
         self._vocabulary_list = QListWidget()
-        self._vocabulary_list.setMinimumHeight(150)
+        self._vocabulary_list.setMinimumHeight(120)
         list_layout.addWidget(self._vocabulary_list)
 
-        # Buttons for list management
         button_layout = QVBoxLayout()
         self._add_vocab_btn = QPushButton("Add")
         self._add_vocab_btn.clicked.connect(self._add_vocabulary_word)
         button_layout.addWidget(self._add_vocab_btn)
-
         self._remove_vocab_btn = QPushButton("Remove")
         self._remove_vocab_btn.clicked.connect(self._remove_vocabulary_word)
         button_layout.addWidget(self._remove_vocab_btn)
-
         button_layout.addStretch()
         list_layout.addLayout(button_layout)
 
         vocab_layout.addLayout(list_layout)
         layout.addWidget(vocab_group)
 
-        # Command threshold section
-        threshold_group = QGroupBox("Command Recognition")
-        threshold_layout = QFormLayout(threshold_group)
+        # ── Section 2: Text Editing Vocabulary (spoken punctuation) ────────
+        editing_group = QGroupBox("Text Editing Vocabulary")
+        editing_layout = QVBoxLayout(editing_group)
 
-        # Threshold slider
-        slider_layout = QVBoxLayout()
+        editing_desc = QLabel(
+            "Spoken words that are converted into characters during dictation. "
+            "Works mid-sentence — say 'comma' or 'new line' as you talk."
+        )
+        editing_desc.setWordWrap(True)
+        editing_desc.setStyleSheet("color: #888888;")
+        editing_layout.addWidget(editing_desc)
 
-        slider_container = QHBoxLayout()
+        editing_list = QListWidget()
+        editing_list.setMaximumHeight(140)
+        editing_list.setEnabled(False)  # read-only catalog for now
+        for phrase, symbol in PUNCTUATION_WORDS.items():
+            display_symbol = symbol.replace("\n", "↵")
+            editing_list.addItem(f"  {phrase}  →  {display_symbol}")
+        editing_layout.addWidget(editing_list)
+
+        layout.addWidget(editing_group)
+
+        # ── Section 3: Editor Commands (keystroke dispatch) ────────────────
+        commands_group = QGroupBox("Editor Commands")
+        commands_layout = QVBoxLayout(commands_group)
+
+        commands_desc = QLabel(
+            f"Send keystrokes to the focused editor by saying "
+            f"<b>'{COMMAND_WAKE_WORD} &lt;name&gt;'</b> "
+            f"(e.g. '{COMMAND_WAKE_WORD} save'). The wake-word prefix prevents "
+            f"false positives during normal dictation."
+        )
+        commands_desc.setWordWrap(True)
+        commands_desc.setStyleSheet("color: #888888;")
+        commands_layout.addWidget(commands_desc)
+
+        self._commands_enabled_check = QCheckBox("Commands active")
+        self._commands_enabled_check.setChecked(True)
+        commands_layout.addWidget(self._commands_enabled_check)
+
+        commands_list = QListWidget()
+        commands_list.setMaximumHeight(160)
+        commands_list.setEnabled(False)  # read-only catalog for now
+        for phrase, info in COMMAND_DEFINITIONS.items():
+            commands_list.addItem(f"  {COMMAND_WAKE_WORD} {phrase}  →  {info['keystroke']}    ({info['description']})")
+        commands_layout.addWidget(commands_list)
+
+        layout.addWidget(commands_group)
+
+        # Hidden: threshold slider kept for backward compat with save/load,
+        # not exposed in UI now that wake-word eliminates ambiguity.
         self._threshold_slider = QSlider(Qt.Orientation.Horizontal)
         self._threshold_slider.setMinimum(70)
         self._threshold_slider.setMaximum(90)
         self._threshold_slider.setValue(80)
-        self._threshold_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self._threshold_slider.setTickInterval(5)
-        self._threshold_slider.valueChanged.connect(self._on_threshold_changed)
-        slider_container.addWidget(self._threshold_slider)
-
+        self._threshold_slider.hide()
         self._threshold_value_label = QLabel("80")
-        self._threshold_value_label.setMinimumWidth(30)
-        slider_container.addWidget(self._threshold_value_label)
-
-        slider_layout.addLayout(slider_container)
-
-        threshold_desc = QLabel("Higher values require closer matches to recognize commands (70-90).")
-        threshold_desc.setWordWrap(True)
-        threshold_desc.setStyleSheet("color: #888888; font-size: 10px;")
-        slider_layout.addWidget(threshold_desc)
-
-        threshold_layout.addRow("Command Threshold:", slider_layout)
-        layout.addWidget(threshold_group)
+        self._threshold_value_label.hide()
 
         layout.addStretch()
 
@@ -389,6 +419,10 @@ class SettingsWindow(QDialog):
         # Command threshold
         threshold = getattr(self._settings, 'command_threshold', 80)
         self._threshold_slider.setValue(int(threshold))
+
+        # Commands active
+        commands_enabled = getattr(self._settings, 'commands_enabled', True)
+        self._commands_enabled_check.setChecked(bool(commands_enabled))
 
         # Update UI state
         self._on_engine_changed()
@@ -482,6 +516,10 @@ class SettingsWindow(QDialog):
         threshold = self._threshold_slider.value()
         if hasattr(self._settings, 'command_threshold'):
             self._settings.command_threshold = threshold
+
+        # Commands active
+        if hasattr(self._settings, 'commands_enabled'):
+            self._settings.commands_enabled = self._commands_enabled_check.isChecked()
 
         # Handle autostart
         self._update_autostart()
