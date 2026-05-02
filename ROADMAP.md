@@ -1,130 +1,116 @@
 # Whisper Voice Input - Roadmap
 
-## Current State (v1.0.1) — Stability & Recovery
+## Shipped since v1.0.1
 
-Bug-fix release focused on eliminating the app-hang / unresponsive state.
+The work below was largely informed by GitHub issues #1–#6 and a series of dictation sessions that surfaced real-world friction. Significant chunks of what was originally pencilled in for v2.0.0 (voice commands, custom vocabulary) landed earlier than planned.
 
-### Bug Fixes
-- [x] **Hotkey debounce (500ms)** — Prevents key bounce and OS re-fire from spawning multiple callbacks, which caused recording to start and immediately stop
-- [x] **Audio stream lifecycle fix** — Leaked `sd.InputStream` objects are now closed before creating new ones; `stop()` always closes the stream even if `_recording` was already False
-- [x] **Language detection fix** — `"en"` now forces English explicitly instead of passing `None` to Whisper (which auto-detected Welsh on short audio). Only `"auto"` triggers auto-detection
-- [x] **Cancellable error recovery timer** — Replaced `QTimer.singleShot` with `startTimer`/`killTimer` so the error→idle transition doesn't collide with new user input
-- [x] **State guards in toggle_recording** — Pressing hotkey during ERROR state cancels the timer and returns to IDLE cleanly; pressing during PROCESSING is explicitly rejected
-- [x] **Transcription timeout (120s)** — Prevents indefinite hang if Whisper stalls; shows error and clears `_processing` flag
-- [x] **`_processing` flag bulletproofing** — `finally` block in `_process_audio()` ensures flag is always cleared
+### Voice control & vocabulary (issues #2, #4 partial)
 
-### New Features
-- [x] **Reset State** (tray menu) — Force-clears processing flag, closes leaked audio streams, returns to idle
-- [x] **Restart App** (tray menu) — Full process restart via `os.execv`, saves widget position first
-- [x] **Afrikaans language support** — Added `"af"` to supported languages
-- [x] **Auto-detect language option** — Added `"auto"` for explicit auto-detection (not default)
+- [x] **Custom vocabulary** — words/names/jargon passed to Whisper as `initial_prompt` to bias transcription. Editable list in settings; active whenever non-empty.
+- [x] **Spoken punctuation** — words like "comma", "period", "full stop", "new line", "new paragraph", "question mark", etc. are substituted into the text during cleanup. Works mid-utterance.
+- [x] **Editor commands with wake-word prefix** — saying `"command save"` fires Ctrl+S, `"command undo"` fires Ctrl+Z, etc. Wake word eliminates false positives. Default catalog: undo / redo / save / select all / copy / paste / cut / find. Master toggle in settings.
+- [x] **User-extensible** — add custom punctuation phrases (`open paren` → `(`) and custom commands (`build` → `ctrl+shift+b`) directly in settings; persisted in JSON.
+- [x] **Settings tab restructured** — three explicit sections: **Custom Vocabulary** | **Text Editing Vocabulary** | **Editor Commands**, each with Add/Remove buttons.
 
-### Previous (v1.0.0)
+### Visual state redesign (issue #2)
 
-Core functionality:
+- [x] **Rolling 5-second volume strip** — extends 2× widget width to the left of the circle. Bars scroll right→left, fade out toward the left edge. Bar amplitude shaped via sqrt curve so normal speech reaches 50–70% of max height.
+- [x] **Whole-circle yellow pulse** during processing (replaces the breathing-scale animation).
+- [x] **Consistent state-coloured mic icon** — grey/blue/orange/red for idle/recording/processing/error, shown in every state.
+- [x] **Retired pulse rings, vertical mic-overlay bars, breathing scale** — superseded by the bar strip + dot/pulse model.
 
-| Feature | Status |
-|---------|--------|
-| Global Hotkey (Ctrl+Shift+Space) | Done |
-| Floating Widget with audio-reactive animations | Done |
-| System Tray integration | Done |
-| Local engine (Faster-Whisper) | Done |
-| Cloud engine (OpenAI API) | Done |
-| Text cleanup & injection | Done |
-| Settings persistence | Done |
-| Logging infrastructure | Done |
+### Architecture & bug fixes
 
-**State Machine**: Idle → Recording → Processing → (Success/Error)
+- [x] **Callout popup retired** (issue #3) — was a placeholder for streaming feedback that didn't stream. Replaced by the bar strip; streaming will inject directly into the editor.
+- [x] **Self-focus bug fixed** — hotkey path no longer captures our own widget's HWND when it's the foreground window. Falls back to the polled external HWND tracker.
+- [x] **Position-clamp on restore** — wider bar-strip layout no longer leaves the widget off-screen on launch.
+- [x] **Whisper model upgraded** — default switched to `small` (vs `tiny`); meaningfully better proper-noun accuracy and fewer hallucinations.
 
 ---
 
-## MVP Polish (Pending)
+## In Progress — Real-time Streaming (issue #4)
+
+Replaces the record-then-transcribe-batch lifecycle with continuous transcription. Architecture sketched in 4 phases, the first two of which are on `feat/streaming-s1`:
+
+- [x] **S1 · Sliding-window substrate** — `StreamingTranscriber` class with rolling 12-second buffer, worker thread that calls `transcribe_array()` on a numpy buffer every ~1 second. VAD min-silence reduced to 500ms so segment boundaries fire on natural pauses.
+- [x] **S2 · LocalAgreement-K commit logic** — word-level hold-back algorithm. A word commits only after appearing in 2 consecutive rounds at the same logical position. Two callbacks: `on_committed(text)` for stable output, `on_tentative(text)` for the still-flickering tail. 1.5-second buffer minimum prevents short-clip hallucinations from being committed.
+- [ ] **S3 · App integration** — recorder fires audio chunks live (not just on stop); app routes committed segments through cleanup → command-classify → inject. Wake-word commands fire when a *segment* (not full utterance) starts with the wake word. Single `STREAMING` state replaces RECORDING/PROCESSING split.
+- [ ] **S4 · Stability** — mid-stream focus loss (pause-and-resume injection), hotkey-during-stream = stop, transcription error mid-stream doesn't crash, final flush of pending tentative on stop.
+
+S3 will sit behind a `streaming_mode` settings flag during testing so batch mode remains the fallback.
+
+---
+
+## Pending Issues
+
+### Issue #1 — Dock widget + hide-to-bar
+
+Dock widget to right edge, slide vertical only. Hide collapses to a thin strip; hover restores. Requires shape change from circle to rectangle. *Touches the widget bounding rect we restructured for #2 — natural follow-up after streaming integration lands.*
+
+### Issue #5 — Clipboard history in tray
+
+Right-click tray → list of recent dictations. Each "snippet" = the text produced between one start-recording and stop-recording. Copy / delete / clear all. *Self-contained, doesn't touch transcription.*
+
+### Issue #6 — Modern settings UI
+
+Windows-2026 styling, light/dark system theme adaptation. *We just refactored settings for the voice-command sections — defer until streaming UI work settles to avoid double-touching the same files.*
+
+---
+
+## Quality & Polish (from earlier roadmap, still relevant)
 
 ### High Priority
 
-- [ ] **First-run onboarding** - Welcome dialog with hotkey instructions
-- [ ] **Clipboard preservation** - Save/restore user clipboard during paste
-- [ ] **Success feedback** - Visual confirmation after paste
-- [ ] **Smart error messages** - Detect and display actionable errors:
-  - "Check microphone" when audio is silent/garbled
-  - "Model not responding" for transcription timeouts
-  - Fade in/out near widget when visible
-  - Toast notification (bottom-right) when widget is hidden
-- [ ] **Error log in tray menu** - Right-click system tray to view recent errors/logs
+- [ ] **First-run onboarding** — welcome dialog with hotkey + setup instructions
+- [ ] **Clipboard preservation** — save/restore user clipboard around paste
+- [ ] **Success feedback** — visual confirmation after paste lands
+- [ ] **Smart error messages** — "check microphone" when audio is silent, "model not responding" for transcription timeouts, etc. Fade in near widget when visible; toast (bottom-right) when widget is hidden.
+- [ ] **Error log in tray menu** — quick access to recent errors/logs without opening the file system
 
 ### Medium Priority
 
-- [ ] **Hotkey hints** - Display current shortcut in tooltip
-- [ ] **Audio device auto-select** - Pick best microphone automatically
+- [ ] **Hotkey hints** — current shortcut shown in tooltip
+- [ ] **Audio device auto-select** — best microphone picked automatically
+- [ ] **Background noise detection** — warn when ambient noise may degrade transcription
+- [ ] **Confidence threshold** — reject low-confidence rounds below configurable cutoff
+- [ ] **Auto-retry on failure** — one silent retry before surfacing the error
+
+### Recording Controls
+
+- [ ] **Right-click widget = cancel recording** (no processing)
+- [ ] **Cancel from tray** while recording
+- [ ] **Hold-to-record mode** as optional alternative to toggle
 
 ---
 
-## Quality & Reliability
+## Distribution
 
-- [ ] **Background noise detection** - Warn user when ambient noise may affect transcription
-- [ ] **Confidence threshold** - Reject low-quality transcriptions below configurable threshold
-- [ ] **Audio quality detection** - Warn about mic permission issues or poor audio levels
-- [ ] **Auto-retry on failure** - Retry transcription once automatically before showing error
-
----
-
-## Recording Controls
-
-- [ ] **Right-click widget to cancel** - While recording, right-click cancels without processing
-- [ ] **Cancel option in tray menu** - While recording, right-click tray shows "Cancel Recording" option
-- [ ] **Hold-to-record mode** (optional setting):
-  - Hold hotkey → recording, release → process
-  - Click and hold widget → recording, release → process
-  - Quick tap/click (< 500ms) → cancel
-
----
-
-## Focus & Window Management
-
-- [ ] **Return focus after transcription** - When clicking widget or using hotkey, return focus to the previously active window after transcription completes
-- [ ] **Same behavior for tray icon** - Clicking system tray icon should also preserve/restore window focus
-- [ ] **"No place to paste" detection** - If no text field is available to receive paste:
-  - Show friendly message to user
-  - Store transcription in recent history for later use
-
----
-
-## Transcription History
-
-- [ ] **Recent transcriptions panel** - Store and display last 5 transcriptions
-- [ ] **Access from tray menu** - View recent transcriptions via right-click on system tray
-- [ ] **Click to copy** - Click any history item to copy to clipboard
-
----
-
-## Widget Animation Redesign
-
-- [ ] **Inward animations** - All visual effects should animate INSIDE the circle, not outside
-- [ ] **Prominent audio level display** - More visible representation of microphone input intensity
-- [ ] **Quality visualization** - Animation should reflect both intensity AND quality of audio signal
-- [ ] **State-specific animations** - Each state (idle, recording, processing, error) should have distinct inward animations
-- [ ] **Hover opacity** - Significantly reduce widget transparency when mouse hovers over it
+- [x] **Single-file portable EXE** via PyInstaller (`dist/Whisper Voice Input.exe`, ~157 MB)
+- [ ] **Windows installer** — Inno Setup or NSIS wrapper with Start Menu entry, uninstaller, version metadata
+- [ ] **Auto-update** — check GitHub releases, download + replace
+- [ ] **Code signing** — eliminate SmartScreen warnings on first launch
 
 ---
 
 ## Future Considerations
 
 | Category | Features |
-|----------|----------|
-| Voice Commands | Spoken punctuation ("period", "comma"), "delete that", "undo", "new line" |
-| Productivity | Custom text snippets triggered by phrase, quick phrases/templates |
-| Voice | Custom vocabulary, multi-language switch, configurable language list in settings UI |
-| History | Favorites, export, search |
-| App | Auto-update, multiple profiles, cross-platform |
+| -------- | -------- |
+| Voice control | ~~Spoken punctuation, voice commands, custom vocabulary~~ ✅ shipped. Remaining: spoken text-formatting commands ("bold this", "select last sentence"), voice-driven snippet expansion |
+| Productivity | Custom text snippets triggered by phrase, quick phrases / templates, per-app shortcut profiles |
+| Voice | ~~Custom vocabulary~~ ✅. Multi-language hot-switch, per-app language overrides, language auto-detect quality improvement |
+| History | Favorites, export, search across past dictations |
+| App | Auto-update, multiple user profiles, cross-platform (macOS/Linux) |
 
 ---
 
 ## Version Plan
 
-| Version | Focus |
-|---------|-------|
-| v1.0.0 | Core functionality |
-| v1.0.1 | **Current** - Stability fixes, recovery mechanisms, language detection |
-| v1.1.0 | MVP polish, error handling, focus management, installer |
-| v1.2.0 | Widget animation redesign, transcription history |
-| v2.0.0 | Voice commands, advanced productivity |
+| Version | Status | Focus |
+| ------- | ------ | ----- |
+| v1.0.0 | Shipped | Core functionality |
+| v1.0.1 | Shipped | Stability fixes, recovery mechanisms, language detection |
+| v1.1.0 | **In progress** | Voice commands & vocabulary, visual state redesign, real-time streaming (S1–S4) |
+| v1.2.0 | Planned | Issue #1 (dock + hide-to-bar), Issue #5 (clipboard history), MVP polish (onboarding, smart errors) |
+| v1.3.0 | Planned | Modern settings UI (issue #6), windows installer, auto-update |
+| v2.0.0 | Aspirational | Per-app shortcut profiles, snippet expansion, cross-platform |
