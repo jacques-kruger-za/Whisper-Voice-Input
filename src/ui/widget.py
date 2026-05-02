@@ -490,18 +490,15 @@ class FloatingWidget(QWidget):
         self._draw_background(painter, center, radius)
         self._draw_border(painter, center, radius)
 
-        if self._state == STATE_RECORDING:
-            # Pulsing red dot in centre — replaces mic icon, pulse rings, vertical bars
-            self._draw_recording_dot(painter, center, radius)
-        elif self._state == STATE_PROCESSING:
-            # Whole-circle yellow pulse — replaces breathing animation
+        # Motion cues behind the mic icon
+        if self._state == STATE_PROCESSING:
             self._draw_processing_pulse(painter, center, radius)
         elif self._state == STATE_IDLE:
-            # Idle: keep the mic icon and subtle glow
             self._draw_idle_glow(painter, center, radius)
-            self._draw_condenser_mic(painter, center)
-        elif self._state == STATE_ERROR:
-            self._draw_condenser_mic(painter, center)
+
+        # Mic icon shown in all states; PNG colour matches state identity:
+        # grey=idle, blue=recording, orange=processing, red=error.
+        self._draw_condenser_mic(painter, center)
 
         # Error flash overlay (any state)
         if self._error_flash_alpha > 0:
