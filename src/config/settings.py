@@ -41,7 +41,8 @@ class Settings:
             "widget_size": DEFAULT_WIDGET_SIZE,
             "first_run": True,
             "custom_vocabulary": [],
-            "vocabulary_enabled": False,
+            "vocabulary_enabled": True,
+            "command_threshold": 80,
         }
 
     def _load(self) -> None:
@@ -186,11 +187,20 @@ class Settings:
     @property
     def vocabulary_enabled(self) -> bool:
         """Get vocabulary enhancement enabled setting."""
-        return self._settings.get("vocabulary_enabled", False)
+        return self._settings.get("vocabulary_enabled", True)
 
     @vocabulary_enabled.setter
     def vocabulary_enabled(self, value: bool) -> None:
         self.set("vocabulary_enabled", value)
+
+    @property
+    def command_threshold(self) -> int:
+        """Get fuzzy command-matching threshold (70-90)."""
+        return int(self._settings.get("command_threshold", 80))
+
+    @command_threshold.setter
+    def command_threshold(self, value: int) -> None:
+        self.set("command_threshold", int(value))
 
 
 # Global settings instance

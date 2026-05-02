@@ -14,7 +14,10 @@ from .config import ENGINE_LOCAL, ENGINE_API
 from .config.constants import TRANSCRIPTION_TIMEOUT_SECONDS
 from .config.logging_config import get_logger
 from .audio import AudioRecorder, validate_audio
-from .recognition import LocalWhisperRecognizer, APIWhisperRecognizer, cleanup_text
+from .recognition import (
+    LocalWhisperRecognizer, APIWhisperRecognizer, cleanup_text,
+    CommandProcessor, classify_transcription,
+)
 from .input import HotkeyManager, inject_text
 from .input.window_focus import (
     save_foreground_window, restore_foreground_window,
@@ -35,6 +38,7 @@ class VoiceInputApp(QObject):
     audio_level = pyqtSignal(float)
     transcription_complete = pyqtSignal(str)
     transcription_segment = pyqtSignal(str)  # per-segment streaming
+    command_detected = pyqtSignal(object)  # CommandResult from background thread
     error_occurred = pyqtSignal(str)
     _hotkey_signal = pyqtSignal(object)  # HWND from hotkey thread → main thread
 
@@ -63,6 +67,8 @@ class VoiceInputApp(QObject):
         self._local_recognizer = LocalWhisperRecognizer(self._settings.model)
         logger.debug("Creating API recognizer")
         self._api_recognizer = APIWhisperRecognizer(self._settings.openai_api_key)
+        logger.debug("Creating command processor")
+        self._command_processor = CommandProcessor()
         self._hotkey_manager = HotkeyManager()
 
         # UI
@@ -85,6 +91,7 @@ class VoiceInputApp(QObject):
         self.audio_level.connect(self._on_audio_level)
         self.transcription_complete.connect(self._on_transcription_complete)
         self.transcription_segment.connect(self._on_segment)
+        self.command_detected.connect(self._on_command_detected)
         self.error_occurred.connect(self._on_error)
         self._hotkey_signal.connect(self._toggle_with_focus)
 
@@ -232,6 +239,32 @@ class VoiceInputApp(QObject):
         logger.info("Injecting text into focused window")
         inject_text(text)
         self.state_changed.emit(STATE_IDLE, "Done!")
+        QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
+
+    def _on_command_detected(self, cmd_result) -> None:
+        """Handle voice command (UI thread). Restore focus then execute."""
+        self._timeout_timer.stop()
+        self._processing = False
+
+        # Show what was detected in the callout
+        self._callout.set_final_text(f"⚡ {cmd_result.command_phrase}")
+
+        hwnd = self._saved_hwnd
+        self._saved_hwnd = None
+
+        if hwnd and is_window_valid(hwnd):
+            restore_foreground_window(hwnd)
+            QTimer.singleShot(150, lambda: self._execute_command_after_focus(cmd_result))
+        else:
+            logger.warning("Cannot execute command: no valid focus target (hwnd=%s)", hwnd)
+            self.state_changed.emit(STATE_IDLE, "Command failed — focus lost")
+            QTimer.singleShot(2000, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
+
+    def _execute_command_after_focus(self, cmd_result) -> None:
+        """Execute command after focus settles (UI thread, called via QTimer)."""
+        ok = self._command_processor.execute_command(cmd_result)
+        msg = f"Done! ({cmd_result.action})" if ok else "Command failed"
+        self.state_changed.emit(STATE_IDLE, msg)
         QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
 
     def _on_error(self, message: str) -> None:
@@ -445,10 +478,21 @@ class VoiceInputApp(QObject):
                 logger.warning("Failed to clean up temp audio file: %s", e)
 
             if result.success:
-                # Clean up text
-                text = cleanup_text(result.text)
-                logger.info("Transcription successful")
-                self.transcription_complete.emit(text)
+                # Classify raw text as command vs dictation BEFORE cleanup
+                # (cleanup adds punctuation/capitalization that can hurt fuzzy match)
+                classification, cmd_result = classify_transcription(
+                    result.text,
+                    threshold=self._settings.command_threshold,
+                )
+                if classification == "command" and cmd_result:
+                    logger.info("Classified as command: %s", cmd_result)
+                    self.command_detected.emit(cmd_result)
+                else:
+                    # Clean up text and emit as dictation
+                    text = cleanup_text(result.text)
+                    self._command_processor.track_dictation(text)
+                    logger.info("Transcription successful")
+                    self.transcription_complete.emit(text)
             else:
                 logger.warning("Transcription failed: %s", result.error)
                 self.error_occurred.emit(result.error or "Transcription failed")
