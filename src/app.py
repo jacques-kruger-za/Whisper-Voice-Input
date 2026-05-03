@@ -101,6 +101,11 @@ class VoiceInputApp(QObject):
         # Whether anything has been injected during the current streaming
         # session — drives leading-space behaviour between committed deltas.
         self._streaming_injected_any = False
+        # Whether the LAST committed chunk ended a sentence (.,!?). When
+        # False, we lowercase the first letter of the next chunk so a
+        # mid-sentence commit boundary doesn't produce "...what happens
+        # As we proceed" with a stray capital.
+        self._streaming_last_ended_sentence = False
 
         # VAD-driven session lifecycle: shared monitor (only one modality is
         # active at a time), polled by a Qt timer to drive auto-pause/auto-stop.
@@ -344,6 +349,24 @@ class VoiceInputApp(QObject):
         cleaned = cleanup_text(raw_text)
         if not cleaned:
             return
+
+        # Continuation rule: if the previous committed chunk did NOT end a
+        # sentence, this chunk is mid-sentence and shouldn't start with a
+        # capital letter. cleanup_text() capitalises each chunk in
+        # isolation; we patch up the boundary case here where it has full
+        # context. Result: "...what happens as we proceed" instead of
+        # "...what happens As we Proceed".
+        if (
+            self._streaming_injected_any
+            and not self._streaming_last_ended_sentence
+            and cleaned
+            and cleaned[0].isupper()
+        ):
+            cleaned = cleaned[0].lower() + cleaned[1:]
+
+        # Track whether THIS chunk ends a sentence (drives the next chunk's
+        # capitalisation rule above).
+        self._streaming_last_ended_sentence = cleaned.rstrip().endswith((".", "!", "?"))
 
         # First commit needs an explicit focus restore + settle delay.
         # Subsequent commits paste immediately into the still-focused target.
@@ -731,6 +754,7 @@ class VoiceInputApp(QObject):
         self._streaming_recognizer.set_model(self._settings.streaming_model)
 
         self._streaming_injected_any = False
+        self._streaming_last_ended_sentence = True  # treat session start as sentence break
         self._streamer = StreamingTranscriber(
             self._streaming_recognizer,
             sample_rate=SAMPLE_RATE,

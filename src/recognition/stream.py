@@ -67,7 +67,12 @@ _WORD_NORM_RE = re.compile(r"[^\w']+", re.UNICODE)
 # prefix of something longer). Without this gate, K=2 fires on single-word
 # prefix agreements ("I", "And", "Missing") that read as dribble between
 # bigger commits.
-MIN_COMMIT_WORDS = 2
+# Bumped from 2 to 3: 2-word fragments like "as we" still slipped through
+# the lower threshold and read as dribble between bigger sentences.
+# 3 covers most natural transition phrases while letting genuine 3+ word
+# clauses commit promptly. Single/two-word complete utterances still get
+# through via the tentative-empty override below.
+MIN_COMMIT_WORDS = 3
 _TERMINAL_PUNCTUATION = (".", "!", "?")
 
 
