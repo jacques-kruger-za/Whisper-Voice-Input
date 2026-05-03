@@ -93,6 +93,10 @@ STATE_IDLE = "idle"
 STATE_RECORDING = "recording"
 STATE_PROCESSING = "processing"
 STATE_ERROR = "error"
+# Command-mode capture: visually distinct from dictation RECORDING. Repurposes
+# the orange mic identity that was previously only used during PROCESSING in
+# batch mode (PROCESSING is now mostly vestigial once streaming is the default).
+STATE_COMMAND = "command"
 
 # Filler words to remove
 FILLER_WORDS = [
@@ -172,3 +176,33 @@ WHISPER_TEMPERATURE = 0.0
 # Settle delay before the FIRST streaming injection — gives the OS time to
 # move focus to the saved HWND before pyautogui.hotkey('ctrl', 'v') runs.
 STREAM_FOCUS_SETTLE_MS = 150
+
+# ── VAD-driven session lifecycle ───────────────────────────────────────────
+# Audio level threshold (normalised 0..1 RMS, same scale as the level callback)
+# below which we treat the input as silence. Speech typically registers at
+# 0.05..0.30, room noise at <0.02; 0.03 is a comfortable boundary.
+SILENCE_THRESHOLD = 0.03
+
+# Streaming: how long of continuous silence before we pause Whisper rounds.
+# Mic stays open, bar strip keeps tracking, but no transcription work runs.
+# Resumes automatically on next loud sample. Helps avoid hallucinations on
+# long silences (Whisper sometimes invents '[Music]' or repeats the last word).
+STREAM_AUTO_PAUSE_SECONDS = 2.0
+
+# Streaming: how long of continuous silence (counts pause time) before the
+# session auto-deactivates and returns to idle. Prevents a forgotten session
+# from running indefinitely if the user walks away.
+STREAM_AUTO_STOP_SECONDS = 60.0
+
+# Command capture: how long of silence AFTER speech was detected before we
+# treat the utterance as complete and fire. Keeps the modality single-press —
+# user says "save", silence triggers fire, no second hotkey needed.
+COMMAND_AUTO_STOP_AFTER_SPEECH_SECONDS = 1.5
+
+# Command capture: bail out if no speech is ever detected within this window.
+# Covers the "accidentally pressed the hotkey" case.
+COMMAND_NO_SPEECH_TIMEOUT_SECONDS = 8.0
+
+# How often the silence-monitor poll timer ticks (ms). Smaller = snappier
+# transitions but more wakeups; 200ms is imperceptible at human-speech timescales.
+SILENCE_POLL_INTERVAL_MS = 200

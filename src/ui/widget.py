@@ -35,11 +35,14 @@ def get_assets_dir() -> str:
 
 ASSETS_DIR = get_assets_dir()
 
-# Mapping of states to _light PNG icons
+# Mapping of states to _light PNG icons. Command state reuses the orange
+# mic asset (same identity as PROCESSING — both signify "engaged with audio
+# that needs to land somewhere").
 ICON_FILES = {
     'idle': 'mic_ico_grey_light.png',
     'recording': 'mic_ico_blue_light.png',
     'processing': 'mic_ico_orange_light.png',
+    'command': 'mic_ico_orange_light.png',
     'error': 'mic_ico_red_light.png',
 }
 
@@ -51,6 +54,7 @@ from ..config.constants import (
     STATE_RECORDING,
     STATE_PROCESSING,
     STATE_ERROR,
+    STATE_COMMAND,
 )
 from .styles import (
     COLOR_BG_DARK,
@@ -417,6 +421,7 @@ class FloatingWidget(QWidget):
             STATE_IDLE: COLOR_WIDGET_IDLE,
             STATE_RECORDING: COLOR_WIDGET_RECORDING,
             STATE_PROCESSING: COLOR_WIDGET_PROCESSING,
+            STATE_COMMAND: COLOR_WIDGET_PROCESSING,  # shares orange identity
             STATE_ERROR: COLOR_WIDGET_ERROR,
         }
         return QColor(colors.get(self._state, COLOR_WIDGET_IDLE))
@@ -435,8 +440,8 @@ class FloatingWidget(QWidget):
         # Smooth audio level for glow effect
         self._smoothed_audio += (self._audio_level - self._smoothed_audio) * 0.15
 
-        if self._state == STATE_RECORDING:
-            # Advance red-dot phase: ~1.2 cycles per second at 60fps
+        if self._state in (STATE_RECORDING, STATE_COMMAND):
+            # Advance phase + force redraw so the bar strip animates with audio
             self._red_dot_phase = (self._red_dot_phase + 0.020) % 1.0
             needs_update = True
 
@@ -482,8 +487,10 @@ class FloatingWidget(QWidget):
         center = QPointF(cx, cy)
         radius = (circle_size / 2) - 4
 
-        # Bar strip lives to the LEFT of the circle, only during recording
-        if self._state == STATE_RECORDING:
+        # Bar strip lives to the LEFT of the circle. Shown for both
+        # RECORDING (blue, dictation) and COMMAND (orange) so the user
+        # gets live audio feedback in both modalities.
+        if self._state in (STATE_RECORDING, STATE_COMMAND):
             self._draw_bar_strip(painter, circle_size)
 
         # Circle background + border
@@ -497,7 +504,7 @@ class FloatingWidget(QWidget):
             self._draw_idle_glow(painter, center, radius)
 
         # Mic icon shown in all states; PNG colour matches state identity:
-        # grey=idle, blue=recording, orange=processing, red=error.
+        # grey=idle, blue=recording, orange=processing/command, red=error.
         self._draw_condenser_mic(painter, center)
 
         # Error flash overlay (any state)
@@ -522,7 +529,12 @@ class FloatingWidget(QWidget):
         bar_thickness = max(2.0, bar_slot * 0.6)
         max_half_height = (strip_height / 2) - 4
 
-        base_color = QColor(COLOR_WIDGET_RECORDING)
+        # Strip color follows the modality: blue for dictation, orange for
+        # command. Mic icon and strip share the colour identity.
+        if self._state == STATE_COMMAND:
+            base_color = QColor(COLOR_WIDGET_PROCESSING)
+        else:
+            base_color = QColor(COLOR_WIDGET_RECORDING)
         history = list(self._audio_history)  # snapshot to avoid mid-paint mutation
 
         for i, level in enumerate(history):
@@ -734,9 +746,10 @@ class FloatingWidget(QWidget):
         """Update widget state."""
         self._state = state
 
-        if state == STATE_RECORDING:
+        if state in (STATE_RECORDING, STATE_COMMAND):
             # Start the rolling-strip sampler. ~30Hz captures 5s × 30 = 150 samples;
             # we keep NUM_BARS in the deque, so older samples drop off naturally.
+            # COMMAND sessions are short but we still want live audio feedback.
             self._audio_history = deque([0.0] * NUM_BARS, maxlen=NUM_BARS)
             self._red_dot_phase = 0.0
             if not self._sample_timer.isActive():

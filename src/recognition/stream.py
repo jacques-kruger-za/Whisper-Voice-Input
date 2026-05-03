@@ -212,6 +212,10 @@ class StreamingTranscriber:
         # Worker control
         self._worker: threading.Thread | None = None
         self._stop_event = threading.Event()
+        # Pause flag: when True, the worker still wakes on its interval but
+        # skips the transcribe call. Audio keeps flowing into the buffer
+        # (so pause→resume doesn't lose context). Driven by app-level VAD.
+        self._paused = False
         self._round = 0
 
     def start(self) -> None:
@@ -252,6 +256,27 @@ class StreamingTranscriber:
             self._chunks.clear()
             self._buffer_samples = 0
         logger.info("Streaming transcriber stopped (rounds_run=%d)", self._round)
+
+    def pause(self) -> None:
+        """Skip future transcription rounds until resume() is called.
+
+        Idempotent. The audio buffer continues to fill so resume() picks up
+        with full context. Whisper hallucinations on long silences are
+        avoided because no rounds run during silence.
+        """
+        if not self._paused:
+            self._paused = True
+            logger.debug("Streaming paused (silence)")
+
+    def resume(self) -> None:
+        """Resume transcription rounds after pause()."""
+        if self._paused:
+            self._paused = False
+            logger.debug("Streaming resumed")
+
+    @property
+    def is_paused(self) -> bool:
+        return self._paused
 
     def feed(self, audio_chunk: np.ndarray) -> None:
         """Append an audio chunk. Thread-safe; called from the recorder thread.
@@ -301,6 +326,11 @@ class StreamingTranscriber:
             # Sleep first so the buffer has audio before the first round.
             if self._stop_event.wait(timeout=self._interval_seconds):
                 break
+
+            # Skip work entirely while paused — audio still buffers via feed(),
+            # we just don't burn CPU on Whisper or risk silent-period hallucinations.
+            if self._paused:
+                continue
 
             window = self._snapshot_window()
             if window is None:

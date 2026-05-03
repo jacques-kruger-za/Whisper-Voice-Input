@@ -15,9 +15,13 @@ from .config.constants import (
     TRANSCRIPTION_TIMEOUT_SECONDS,
     STREAM_WINDOW_SECONDS, STREAM_INTERVAL_SECONDS,
     STREAM_VAD_MIN_SILENCE_MS, STREAM_FOCUS_SETTLE_MS,
+    STATE_COMMAND,
+    STREAM_AUTO_PAUSE_SECONDS, STREAM_AUTO_STOP_SECONDS,
+    COMMAND_AUTO_STOP_AFTER_SPEECH_SECONDS, COMMAND_NO_SPEECH_TIMEOUT_SECONDS,
+    SILENCE_POLL_INTERVAL_MS,
 )
 from .config.logging_config import get_logger
-from .audio import AudioRecorder, validate_audio
+from .audio import AudioRecorder, validate_audio, SilenceMonitor
 from .recognition import (
     LocalWhisperRecognizer, APIWhisperRecognizer, cleanup_text,
     CommandProcessor, classify_transcription,
@@ -91,6 +95,12 @@ class VoiceInputApp(QObject):
         # Whether anything has been injected during the current streaming
         # session — drives leading-space behaviour between committed deltas.
         self._streaming_injected_any = False
+
+        # VAD-driven session lifecycle: shared monitor (only one modality is
+        # active at a time), polled by a Qt timer to drive auto-pause/auto-stop.
+        self._silence_monitor = SilenceMonitor()
+        self._silence_poll_timer = QTimer(self)
+        self._silence_poll_timer.timeout.connect(self._poll_silence)
 
         # UI
         self._widget: FloatingWidget | None = None
@@ -205,7 +215,13 @@ class VoiceInputApp(QObject):
             self._tray.set_state(state)
 
     def _on_audio_level_raw(self, level: float) -> None:
-        """Handle audio level from recorder thread."""
+        """Handle audio level from recorder thread.
+
+        Two consumers: the audio_level Qt signal (drives the bar strip on the
+        UI thread) and the SilenceMonitor (drives VAD-based session lifecycle).
+        Both are cheap; SilenceMonitor.update is a single threshold compare.
+        """
+        self._silence_monitor.update(level)
         self.audio_level.emit(level)
 
     def _on_audio_level(self, level: float) -> None:
@@ -359,6 +375,69 @@ class VoiceInputApp(QObject):
         inject_text(text)
         self._streaming_injected_any = True
 
+    # ── VAD-driven lifecycle (shared poll handler) ────────────────────────
+
+    def _poll_silence(self) -> None:
+        """Tick handler for silence-driven transitions (UI thread).
+
+        Routes to the appropriate per-modality logic based on what's active.
+        Runs every SILENCE_POLL_INTERVAL_MS while a session is live.
+        """
+        if self._command_capturing:
+            self._poll_silence_command()
+        elif self._streamer is not None:
+            self._poll_silence_streaming()
+
+    def _poll_silence_streaming(self) -> None:
+        """Auto-pause / auto-stop transitions for streaming dictation.
+
+        - Continuous silence ≥ STREAM_AUTO_STOP_SECONDS: end the session.
+        - Continuous silence ≥ STREAM_AUTO_PAUSE_SECONDS: pause Whisper rounds
+          (audio still buffers; resume on next loud sample).
+        - Otherwise: ensure we're resumed.
+        """
+        silence = self._silence_monitor.silence_duration()
+        if silence >= STREAM_AUTO_STOP_SECONDS:
+            logger.info("Streaming auto-stop after %.1fs silence", silence)
+            self._stop_streaming()
+            return
+        if silence >= STREAM_AUTO_PAUSE_SECONDS:
+            if self._streamer and not self._streamer.is_paused:
+                self._streamer.pause()
+        else:
+            if self._streamer and self._streamer.is_paused:
+                self._streamer.resume()
+
+    def _poll_silence_command(self) -> None:
+        """Auto-fire / auto-cancel transitions for command capture.
+
+        - Speech detected, then silence ≥ COMMAND_AUTO_STOP_AFTER_SPEECH:
+          fire (run the existing _stop_command_capture path → transcribe → keystroke).
+        - No speech ever, elapsed ≥ COMMAND_NO_SPEECH_TIMEOUT: cancel.
+        """
+        if self._silence_monitor.speech_detected():
+            silence = self._silence_monitor.silence_duration()
+            if silence >= COMMAND_AUTO_STOP_AFTER_SPEECH_SECONDS:
+                logger.info("Command auto-fire after %.2fs silence post-speech", silence)
+                self._stop_command_capture()
+        else:
+            elapsed = self._silence_monitor.elapsed_since_start()
+            if elapsed >= COMMAND_NO_SPEECH_TIMEOUT_SECONDS:
+                logger.info("Command auto-cancel: no speech in %.1fs", elapsed)
+                self._cancel_command_capture()
+
+    def _cancel_command_capture(self) -> None:
+        """Abort an in-flight command capture without firing a keystroke."""
+        if not self._command_capturing:
+            return
+        logger.info("Cancelling command capture")
+        self._command_capturing = False
+        self._silence_poll_timer.stop()
+        self._recorder.cancel()
+        self._saved_hwnd = None
+        self.state_changed.emit(STATE_IDLE, "Command cancelled")
+        QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
+
     def _on_streaming_tentative(self, text: str) -> None:
         """Tentative tail update — currently just logged.
 
@@ -478,14 +557,17 @@ class VoiceInputApp(QObject):
     # ── Command-only capture lifecycle ────────────────────────────────────
 
     def _toggle_command_capture(self, saved_hwnd: int | None) -> None:
-        """Toggle a command-only recording session (UI thread).
+        """Single-press command lifecycle (UI thread).
 
-        Press → start brief recording. Press again → stop, transcribe,
-        classify (no wake word required), fire keystroke. Mutually
+        Press → start. The session ends automatically: VAD detects silence
+        after speech and fires the command, OR cancels after the no-speech
+        timeout. A SECOND hotkey press during capture means CANCEL — the
+        user is aborting (e.g. they said the wrong thing). Mutually
         exclusive with dictation: ignored if dictation is in flight.
         """
         if self._command_capturing:
-            self._stop_command_capture()
+            # Second press = cancel, not fire. The fire path is VAD-driven.
+            self._cancel_command_capture()
             return
 
         # Refuse if dictation/processing is active — clear UX over magic.
@@ -497,17 +579,22 @@ class VoiceInputApp(QObject):
         self._start_command_capture()
 
     def _start_command_capture(self) -> None:
-        """Begin recording for a command (uses batch path, no streaming)."""
+        """Begin recording for a command. Single-press UX: VAD auto-stop
+        fires after the user finishes speaking (or auto-cancel if they
+        never speak), so they don't need to press the hotkey again.
+        """
         if self._recorder.is_recording():
             logger.debug("Command capture refused: recorder already busy")
             return
         logger.info("Starting command capture")
         self._command_capturing = True
-        # Use RECORDING state — same widget colour cue as dictation. The
-        # absence of a bar strip strip movement won't matter for short
-        # commands; future polish could add a distinct command-mode tint.
-        self.state_changed.emit(STATE_RECORDING, "Command...")
+        # Distinct visual identity (orange) from dictation (blue).
+        self.state_changed.emit(STATE_COMMAND, "Command...")
         self._recorder.start()
+        # Reset and start the silence monitor so the poll timer can decide
+        # when speech-ended → fire, or no-speech-ever → cancel.
+        self._silence_monitor.reset()
+        self._silence_poll_timer.start(SILENCE_POLL_INTERVAL_MS)
 
     def _stop_command_capture(self) -> None:
         """Stop command recording, transcribe, classify (no wake word), fire."""
@@ -515,6 +602,7 @@ class VoiceInputApp(QObject):
             return
         logger.info("Stopping command capture")
         self._command_capturing = False
+        self._silence_poll_timer.stop()
         self.state_changed.emit(STATE_PROCESSING, "Recognizing command...")
         self._processing = True
 
@@ -625,6 +713,10 @@ class VoiceInputApp(QObject):
         self._streamer.start()
         # Recorder feeds raw chunks straight into the streamer's buffer.
         self._recorder.set_chunk_callback(self._streamer.feed)
+        # VAD lifecycle: reset silence monitor + start the poll timer so
+        # auto-pause/auto-stop transitions can fire on the UI thread.
+        self._silence_monitor.reset()
+        self._silence_poll_timer.start(SILENCE_POLL_INTERVAL_MS)
         logger.info("Streaming mode active")
 
     def _stop_recording(self) -> None:
@@ -670,8 +762,10 @@ class VoiceInputApp(QObject):
         committed text mid-flight.
         """
         logger.info("Stopping streaming")
-        # Detach the chunk callback FIRST so no further audio reaches the
-        # streamer after we ask it to stop.
+        # Stop polling FIRST so a tick mid-teardown can't re-trigger transitions.
+        self._silence_poll_timer.stop()
+        # Detach the chunk callback so no further audio reaches the streamer
+        # after we ask it to stop.
         self._recorder.set_chunk_callback(None)
         # Cancel rather than stop() so we don't write a redundant WAV.
         self._recorder.cancel()
@@ -861,6 +955,9 @@ class VoiceInputApp(QObject):
         self._command_capturing = False
         self._streaming_injected_any = False
 
+        # Stop the VAD poll timer if it was running for either modality
+        self._silence_poll_timer.stop()
+
         # Tear down any active streamer (worker thread + buffer) so reset
         # doesn't leave an orphan thread feeding callbacks into a UI that
         # thinks it's idle.
@@ -900,6 +997,7 @@ class VoiceInputApp(QObject):
 
         # Stop everything
         self._focus_tracker.stop()
+        self._silence_poll_timer.stop()
         self._hotkey_manager.stop()
         self._command_hotkey_manager.stop()
         if self._streamer is not None:
@@ -941,8 +1039,9 @@ class VoiceInputApp(QObject):
             logger.debug("Saving widget position")
             self._settings.widget_position = self._widget.save_position()
 
-        # Stop focus tracker and hotkey listeners
+        # Stop focus tracker, silence poll, and hotkey listeners
         self._focus_tracker.stop()
+        self._silence_poll_timer.stop()
         logger.debug("Stopping hotkey listeners")
         self._hotkey_manager.stop()
         self._command_hotkey_manager.stop()
