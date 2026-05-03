@@ -20,6 +20,11 @@ from PyQt6.QtGui import (
 BAR_STRIP_MULTIPLIER = 2
 AUDIO_HISTORY_SECONDS = 5.0
 NUM_BARS = 60
+# Noise floor: audio levels below this are treated as ambient/silence and
+# render as nothing on the strip. Speech easily exceeds 0.05; typical mic
+# self-noise + room tone sits in 0.02..0.04. Without this, the bar strip
+# shows a constant "thick line" of background noise during pauses.
+BAR_NOISE_FLOOR = 0.05
 
 
 def get_assets_dir() -> str:
@@ -538,14 +543,19 @@ class FloatingWidget(QWidget):
         history = list(self._audio_history)  # snapshot to avoid mid-paint mutation
 
         for i, level in enumerate(history):
-            if level <= 0.02:
+            # Subtract noise floor so ambient room tone doesn't paint a
+            # constant baseline. Anything at or below the floor renders nothing.
+            effective = level - BAR_NOISE_FLOOR
+            if effective <= 0.0:
                 continue
             # i=0 oldest → leftmost; i=NUM_BARS-1 newest → rightmost (next to circle)
             x = strip_left + (i + 0.5) * bar_slot
-            # Audio RMS rarely hits 1.0 — typical speech is 0.1..0.3. Apply a
-            # sqrt curve to compress dynamic range so normal speaking volume
-            # pushes bars to ~50-70% of max height, with shouting near 100%.
-            shaped = math.sqrt(clamp(level, 0.0, 1.0))
+            # Normalise the post-floor range to 0..1 then sqrt to keep the
+            # response sensitive in the speech band (0.05..0.30) while not
+            # saturating on shouts. With the floor removed, quiet rooms now
+            # render flat instead of a perpetual mid-height line.
+            normalised = effective / (1.0 - BAR_NOISE_FLOOR)
+            shaped = math.sqrt(clamp(normalised, 0.0, 1.0))
             half_h = shaped * max_half_height
             # Linear fade: opacity ramps from 0 at left edge to 1 at the circle
             fade = (i + 1) / NUM_BARS
