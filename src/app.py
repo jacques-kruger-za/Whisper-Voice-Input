@@ -587,10 +587,18 @@ class VoiceInputApp(QObject):
             logger.debug("Command capture refused: recorder already busy")
             return
         logger.info("Starting command capture")
-        self._command_capturing = True
         # Distinct visual identity (orange) from dictation (blue).
         self.state_changed.emit(STATE_COMMAND, "Command...")
-        self._recorder.start()
+        try:
+            self._recorder.start()
+        except Exception as e:
+            logger.exception("Recorder failed to start (command): %s", e)
+            self._saved_hwnd = None
+            self.error_occurred.emit(
+                "Microphone unavailable. Check Settings → Audio device."
+            )
+            return
+        self._command_capturing = True
         # Reset and start the silence monitor so the poll timer can decide
         # when speech-ended → fire, or no-speech-ever → cancel.
         self._silence_monitor.reset()
@@ -680,7 +688,13 @@ class VoiceInputApp(QObject):
             logger.debug("Toggle recording ignored: state is %s", self._state)
 
     def _start_recording(self) -> None:
-        """Start recording audio (streaming or batch mode)."""
+        """Start recording audio (streaming or batch mode).
+
+        Recorder is started FIRST so a hardware/device failure doesn't leave
+        the streaming wiring half-up (which would then immediately auto-stop
+        and mask the real error). Streaming attaches only after the audio
+        stream is open.
+        """
         if self._recorder.is_recording():
             logger.debug("Start recording ignored: already recording")
             return
@@ -688,10 +702,18 @@ class VoiceInputApp(QObject):
         logger.info("Starting audio recording (streaming=%s)", self._settings.streaming_mode)
         self.state_changed.emit(STATE_RECORDING, "Recording...")
 
+        try:
+            self._recorder.start()
+        except Exception as e:
+            logger.exception("Recorder failed to start: %s", e)
+            self.error_occurred.emit(
+                "Microphone unavailable. Check Settings → Audio device, "
+                "then Tray → Reset State."
+            )
+            return
+
         if self._settings.streaming_mode:
             self._start_streaming()
-
-        self._recorder.start()
 
     def _start_streaming(self) -> None:
         """Spin up the streaming transcriber and hook the recorder to feed it."""

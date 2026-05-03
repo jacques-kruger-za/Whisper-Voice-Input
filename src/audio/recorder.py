@@ -125,14 +125,39 @@ class AudioRecorder:
             if device_id is None:
                 logger.warning("Requested device '%s' not found, using default", self._device)
 
-        self._stream = sd.InputStream(
-            device=device_id,
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype=np.float32,
-            callback=self._audio_callback,
-        )
-        self._stream.start()
+        # Try the requested device; if PortAudio rejects it (disconnected,
+        # renamed, driver gone), fall back to the system default rather
+        # than failing the whole recording session.
+        try:
+            self._stream = sd.InputStream(
+                device=device_id,
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype=np.float32,
+                callback=self._audio_callback,
+            )
+            self._stream.start()
+        except sd.PortAudioError as e:
+            if device_id is None:
+                # Already on default — no fallback possible. Reset state and re-raise.
+                with self._lock:
+                    self._recording = False
+                    self._audio_data = []
+                self._stream = None
+                raise
+            logger.warning(
+                "Configured device '%s' (id=%d) failed (%s); falling back to system default",
+                self._device, device_id, e,
+            )
+            device_id = None
+            self._stream = sd.InputStream(
+                device=None,
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype=np.float32,
+                callback=self._audio_callback,
+            )
+            self._stream.start()
         logger.info("Audio recording started (device=%s, rate=%d, channels=%d)",
                     device_id or "default", SAMPLE_RATE, CHANNELS)
 

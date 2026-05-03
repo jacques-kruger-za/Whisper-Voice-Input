@@ -57,12 +57,24 @@ class SilenceMonitor:
             return self._first_loud_ts is not None
 
     def silence_duration(self) -> float:
-        """Seconds since the most recent loud sample. ``inf`` if never loud."""
+        """Seconds since the most recent loud sample, OR since session start
+        if no loud sample has been observed yet.
+
+        Floor at session_start so callers comparing against a timeout
+        (e.g. STREAM_AUTO_STOP_SECONDS) get a sane "0 at session start,
+        grows linearly" behaviour even when the user hasn't spoken yet.
+        Returning inf would instantly trip every threshold.
+        """
         with self._lock:
-            ts = self._last_loud_ts
-        if ts is None:
-            return float("inf")
-        return time.monotonic() - ts
+            last = self._last_loud_ts
+            start = self._session_start_ts
+        # Use the LATER of (last loud sample, session start) as our
+        # reference point, so silence is always measured from the most
+        # recent meaningful event in the session.
+        ref = max(filter(None, (last, start)), default=None)
+        if ref is None:
+            return 0.0
+        return time.monotonic() - ref
 
     def elapsed_since_start(self) -> float:
         """Seconds since the session was reset (started). 0.0 if not started."""
