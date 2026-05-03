@@ -60,6 +60,16 @@ class StreamSegment:
 # still emitting the model's chosen punctuation in the committed text.
 _WORD_NORM_RE = re.compile(r"[^\w']+", re.UNICODE)
 
+# Minimum words before a commit is allowed to land into the user's text,
+# unless (a) the agreed prefix ends in terminal punctuation, or (b) the
+# whole new-content has agreed (no tentative remainder, so the short
+# fragment is definitely the user's complete utterance, not a transient
+# prefix of something longer). Without this gate, K=2 fires on single-word
+# prefix agreements ("I", "And", "Missing") that read as dribble between
+# bigger commits.
+MIN_COMMIT_WORDS = 2
+_TERMINAL_PUNCTUATION = (".", "!", "?")
+
 
 def _normalise_word(w: str) -> str:
     return _WORD_NORM_RE.sub("", w).lower()
@@ -122,6 +132,17 @@ class CommitTracker:
 
         # LocalAgreement: words that agreed across two consecutive rounds
         common = self._common_prefix(new_content, prev_new_content)
+
+        # Hold back fragments shorter than MIN_COMMIT_WORDS that don't end
+        # at a sentence boundary AND have more tentative content following.
+        # The tentative-non-empty check is the key: if everything has
+        # agreed (tentative is empty), the short fragment IS the user's
+        # complete utterance — commit it. Otherwise it's a transient
+        # prefix of something still being decoded — wait for more.
+        if 0 < len(common) < MIN_COMMIT_WORDS and len(common) < len(new_content):
+            last = common[-1].rstrip()
+            if not last.endswith(_TERMINAL_PUNCTUATION):
+                common = []
 
         # Commit using the CURRENT round's casing/punctuation
         newly_committed_words = new_content[: len(common)]
@@ -321,11 +342,28 @@ class StreamingTranscriber:
         return joined
 
     def _run(self) -> None:
-        """Worker loop: every interval, transcribe and emit segments."""
+        """Worker loop: schedule rounds at fixed interval boundaries.
+
+        Old loop did wait(interval) THEN transcribe — total cycle was
+        (interval + transcribe_time) ~= 1.7s for 1s interval + 0.7s tiny.
+        New loop sleeps until next_round_time so cycles are exactly
+        interval_seconds apart when transcription fits, and just go
+        back-to-back when transcription is slower (graceful degradation,
+        no queue buildup).
+        """
+        next_round_time = time.monotonic() + self._interval_seconds
         while not self._stop_event.is_set():
-            # Sleep first so the buffer has audio before the first round.
-            if self._stop_event.wait(timeout=self._interval_seconds):
+            # Sleep until the next scheduled round, but wake immediately if
+            # stop is requested.
+            now = time.monotonic()
+            sleep_for = max(0.0, next_round_time - now)
+            if self._stop_event.wait(timeout=sleep_for):
                 break
+            next_round_time += self._interval_seconds
+            # If we've fallen significantly behind, snap forward to "now"
+            # rather than burning through accumulated rounds.
+            if next_round_time < time.monotonic():
+                next_round_time = time.monotonic() + self._interval_seconds
 
             # Skip work entirely while paused — audio still buffers via feed(),
             # we just don't burn CPU on Whisper or risk silent-period hallucinations.
