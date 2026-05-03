@@ -99,12 +99,13 @@ class LocalWhisperRecognizer(BaseRecognizer):
             logger.debug("Calling Whisper transcribe with language=%s", lang)
 
             # Transcribe
+            from ..config.constants import WHISPER_BEAM_SIZE, WHISPER_BEST_OF, WHISPER_TEMPERATURE
             segments, info = self._model.transcribe(
                 str(audio_path),
                 language=lang,
-                beam_size=5,
-                best_of=5,
-                temperature=0.0,
+                beam_size=WHISPER_BEAM_SIZE,
+                best_of=WHISPER_BEST_OF,
+                temperature=WHISPER_TEMPERATURE,
                 condition_on_previous_text=True,
                 vad_filter=True,  # Filter out non-speech
                 initial_prompt=prompt,
@@ -166,12 +167,13 @@ class LocalWhisperRecognizer(BaseRecognizer):
 
             prompt = initial_prompt[:224] if initial_prompt else None
 
+            from ..config.constants import WHISPER_BEAM_SIZE, WHISPER_BEST_OF, WHISPER_TEMPERATURE
             segments, _info = self._model.transcribe(
                 samples,
                 language=lang,
-                beam_size=5,
-                best_of=5,
-                temperature=0.0,
+                beam_size=WHISPER_BEAM_SIZE,
+                best_of=WHISPER_BEST_OF,
+                temperature=WHISPER_TEMPERATURE,
                 condition_on_previous_text=False,  # streaming: each window stands alone
                 vad_filter=True,
                 vad_parameters={

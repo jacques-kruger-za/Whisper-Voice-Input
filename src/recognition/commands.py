@@ -65,12 +65,20 @@ class CommandResult:
 def classify_transcription(
     text: str,
     threshold: int | None = None,
+    require_wake_word: bool = True,
 ) -> tuple[str, CommandResult | None]:
     """Classify transcription as command or dictation.
 
-    Returns ("command", CommandResult) if text starts with the wake word
-    and the suffix fuzzy-matches a defined command above threshold.
-    Returns ("dictation", None) otherwise.
+    With ``require_wake_word=True`` (default, legacy mixed-mode path):
+      Returns ("command", CommandResult) if text starts with the wake word
+      and the suffix fuzzy-matches a defined command above threshold.
+
+    With ``require_wake_word=False`` (command-hotkey capture path):
+      The hotkey IS the wake — match the entire utterance directly. No
+      prefix needed. Used when commands have their own dedicated hotkey,
+      so the user can say just "save" instead of "command save".
+
+    Returns ("dictation", None) when nothing matches.
     """
     if threshold is None:
         threshold = COMMAND_THRESHOLD
@@ -81,14 +89,18 @@ def classify_transcription(
     # Strip whisper's leading-space convention and trailing punctuation
     # (cleanup hasn't run yet, so utterances often end with "." from Whisper).
     raw = text.strip().rstrip(".!?,;:")
-    match = _WAKE_WORD_RE.match(raw)
-    if not match:
-        logger.debug("No wake word in %r — dictation", text[:80])
-        return ("dictation", None)
 
-    suffix = raw[match.end():].strip().lower()
+    if require_wake_word:
+        match = _WAKE_WORD_RE.match(raw)
+        if not match:
+            logger.debug("No wake word in %r — dictation", text[:80])
+            return ("dictation", None)
+        suffix = raw[match.end():].strip().lower()
+    else:
+        suffix = raw.strip().lower()
+
     if not suffix:
-        logger.debug("Wake word with no command suffix — dictation")
+        logger.debug("Empty command suffix — dictation")
         return ("dictation", None)
 
     # Fuzzy-match the suffix against known command phrases

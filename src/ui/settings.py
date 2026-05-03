@@ -41,6 +41,7 @@ class SettingsWindow(QDialog):
     # Signals
     settings_changed = pyqtSignal()
     hotkey_changed = pyqtSignal(dict)
+    command_hotkey_changed = pyqtSignal(dict)
     widget_size_changed = pyqtSignal(str)
 
     def __init__(self, parent=None):
@@ -89,23 +90,38 @@ class SettingsWindow(QDialog):
         main_layout.addLayout(button_layout)
 
     def _create_hotkey_section(self) -> QGroupBox:
-        """Create hotkey configuration section."""
-        group = QGroupBox("Hotkey")
+        """Create hotkey configuration section (dictation + command)."""
+        group = QGroupBox("Hotkeys")
         layout = QFormLayout(group)
 
-        # Current hotkey display
-        hotkey_layout = QHBoxLayout()
+        # Dictation hotkey
+        dict_layout = QHBoxLayout()
         self._hotkey_display = QLineEdit()
         self._hotkey_display.setReadOnly(True)
         self._hotkey_display.setPlaceholderText("Press 'Set' to configure")
-        hotkey_layout.addWidget(self._hotkey_display)
+        dict_layout.addWidget(self._hotkey_display)
 
         self._hotkey_btn = QPushButton("Set")
         self._hotkey_btn.setFixedWidth(60)
         self._hotkey_btn.clicked.connect(self._capture_hotkey)
-        hotkey_layout.addWidget(self._hotkey_btn)
+        dict_layout.addWidget(self._hotkey_btn)
 
-        layout.addRow("Toggle Recording:", hotkey_layout)
+        layout.addRow("Toggle Dictation:", dict_layout)
+
+        # Command-only hotkey (separate keystroke modality — say a command
+        # without the wake-word prefix; the hotkey itself signals intent)
+        cmd_layout = QHBoxLayout()
+        self._command_hotkey_display = QLineEdit()
+        self._command_hotkey_display.setReadOnly(True)
+        self._command_hotkey_display.setPlaceholderText("Press 'Set' to configure")
+        cmd_layout.addWidget(self._command_hotkey_display)
+
+        self._command_hotkey_btn = QPushButton("Set")
+        self._command_hotkey_btn.setFixedWidth(60)
+        self._command_hotkey_btn.clicked.connect(self._capture_command_hotkey)
+        cmd_layout.addWidget(self._command_hotkey_btn)
+
+        layout.addRow("Toggle Command:", cmd_layout)
 
         return group
 
@@ -391,10 +407,18 @@ class SettingsWindow(QDialog):
 
     def _load_settings(self) -> None:
         """Load current settings into UI."""
-        # Hotkey
+        # Hotkey (dictation)
         hotkey = self._settings.hotkey
         self._hotkey_display.setText(hotkey_to_string(hotkey))
         self._current_hotkey = hotkey.copy()
+
+        # Hotkey (command)
+        cmd_hotkey = getattr(self._settings, 'command_hotkey', None)
+        if cmd_hotkey:
+            self._command_hotkey_display.setText(hotkey_to_string(cmd_hotkey))
+            self._current_command_hotkey = dict(cmd_hotkey)
+        else:
+            self._current_command_hotkey = {}
 
         # Audio device
         device = self._settings.audio_device
@@ -616,7 +640,7 @@ class SettingsWindow(QDialog):
                     self._refresh_commands_list()
 
     def _capture_hotkey(self) -> None:
-        """Start capturing a new hotkey."""
+        """Start capturing a new dictation hotkey."""
         self._hotkey_btn.setText("...")
         self._hotkey_btn.setEnabled(False)
         self._hotkey_display.setText("Press your hotkey...")
@@ -625,17 +649,37 @@ class SettingsWindow(QDialog):
         self._hotkey_capture.capture(self._on_hotkey_captured)
 
     def _on_hotkey_captured(self, hotkey: dict) -> None:
-        """Handle captured hotkey."""
+        """Handle captured dictation hotkey."""
         self._current_hotkey = hotkey
         self._hotkey_display.setText(hotkey_to_string(hotkey))
         self._hotkey_btn.setText("Set")
         self._hotkey_btn.setEnabled(True)
+
+    def _capture_command_hotkey(self) -> None:
+        """Start capturing a new command hotkey."""
+        self._command_hotkey_btn.setText("...")
+        self._command_hotkey_btn.setEnabled(False)
+        self._command_hotkey_display.setText("Press your hotkey...")
+
+        self._command_hotkey_capture = HotkeyCapture()
+        self._command_hotkey_capture.capture(self._on_command_hotkey_captured)
+
+    def _on_command_hotkey_captured(self, hotkey: dict) -> None:
+        """Handle captured command hotkey."""
+        self._current_command_hotkey = hotkey
+        self._command_hotkey_display.setText(hotkey_to_string(hotkey))
+        self._command_hotkey_btn.setText("Set")
+        self._command_hotkey_btn.setEnabled(True)
 
     def _save_settings(self) -> None:
         """Save settings and close."""
         # Hotkey
         old_hotkey = self._settings.hotkey
         self._settings.hotkey = self._current_hotkey
+
+        old_command_hotkey = getattr(self._settings, 'command_hotkey', {})
+        if hasattr(self._settings, 'command_hotkey') and self._current_command_hotkey:
+            self._settings.command_hotkey = self._current_command_hotkey
 
         # Audio
         self._settings.audio_device = self._device_combo.currentData()
@@ -686,6 +730,8 @@ class SettingsWindow(QDialog):
         self.settings_changed.emit()
         if self._current_hotkey != old_hotkey:
             self.hotkey_changed.emit(self._current_hotkey)
+        if self._current_command_hotkey and self._current_command_hotkey != old_command_hotkey:
+            self.command_hotkey_changed.emit(self._current_command_hotkey)
         if new_widget_size != old_widget_size:
             self.widget_size_changed.emit(new_widget_size)
 

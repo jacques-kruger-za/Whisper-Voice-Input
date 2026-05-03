@@ -9,6 +9,7 @@ from .constants import (
     APP_NAME,
     APP_AUTHOR,
     DEFAULT_HOTKEY,
+    DEFAULT_COMMAND_HOTKEY,
     DEFAULT_MODEL,
     DEFAULT_LANGUAGE,
     DEFAULT_ENGINE,
@@ -30,6 +31,7 @@ class Settings:
         """Return default settings."""
         return {
             "hotkey": DEFAULT_HOTKEY.copy(),
+            "command_hotkey": DEFAULT_COMMAND_HOTKEY.copy(),
             "audio_device": None,  # None = system default
             "engine": DEFAULT_ENGINE,
             "model": DEFAULT_MODEL,
@@ -83,6 +85,15 @@ class Settings:
     @hotkey.setter
     def hotkey(self, value: dict) -> None:
         self.set("hotkey", value)
+
+    @property
+    def command_hotkey(self) -> dict:
+        """Hotkey for command-only capture (separate from dictation)."""
+        return self._settings.get("command_hotkey", DEFAULT_COMMAND_HOTKEY.copy())
+
+    @command_hotkey.setter
+    def command_hotkey(self, value: dict) -> None:
+        self.set("command_hotkey", value)
 
     @property
     def audio_device(self) -> str | None:

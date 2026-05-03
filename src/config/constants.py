@@ -6,6 +6,11 @@ APP_AUTHOR = "WhisperVoiceInput"
 
 # Default hotkey (Ctrl+Shift+Space)
 DEFAULT_HOTKEY = {"ctrl": True, "shift": True, "alt": False, "key": "space"}
+# Separate hotkey for command-only capture. Pressing this triggers a short
+# recording where every utterance is interpreted as a command (no wake-word
+# prefix needed). Ctrl+Shift+C chosen as a low-collision combo that doesn't
+# clash with the universal Ctrl+C copy shortcut (Shift makes the difference).
+DEFAULT_COMMAND_HOTKEY = {"ctrl": True, "shift": True, "alt": False, "key": "c"}
 
 # Hotkey debounce (milliseconds) - prevents key bounce and rapid re-fire
 HOTKEY_DEBOUNCE_MS = 500
@@ -139,3 +144,31 @@ PUNCTUATION_WORDS = {
 # ("undue" -> "undo"). Wake-word prefix already eliminates ambiguity,
 # so this can be relatively lenient.
 COMMAND_THRESHOLD = 65
+
+# ── Streaming transcription tuning ─────────────────────────────────────────
+# Used by StreamingTranscriber + app.py command-capture flow. Centralised so
+# tuning happens in one place per the project's DRY rule.
+
+# Length of the rolling audio window passed to Whisper each round.
+# Longer = more context (better accuracy on long sentences) but heavier per-round
+# CPU. 12s gives Whisper enough context to disambiguate while staying fast.
+STREAM_WINDOW_SECONDS = 12.0
+
+# How often a new transcription round runs. Each round pays the full
+# transcribe-window cost, so this is the lower bound on commit latency.
+STREAM_INTERVAL_SECONDS = 1.0
+
+# Min silence (ms) before VAD fires a segment boundary in streaming mode.
+# Shorter than the batch default (2000) so spoken-punctuation pauses are
+# detected promptly during continuous dictation.
+STREAM_VAD_MIN_SILENCE_MS = 500
+
+# Whisper decoder parameters shared by transcribe() and transcribe_array().
+# Centralising avoids drift between batch and streaming paths.
+WHISPER_BEAM_SIZE = 5
+WHISPER_BEST_OF = 5
+WHISPER_TEMPERATURE = 0.0
+
+# Settle delay before the FIRST streaming injection — gives the OS time to
+# move focus to the saved HWND before pyautogui.hotkey('ctrl', 'v') runs.
+STREAM_FOCUS_SETTLE_MS = 150

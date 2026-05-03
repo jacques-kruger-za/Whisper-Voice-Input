@@ -233,10 +233,20 @@ class StreamingTranscriber:
         )
 
     def stop(self) -> None:
-        """Signal worker to exit and join it. Drops any pending audio."""
+        """Signal worker to exit. Returns within ~500ms even if a Whisper
+        round is mid-flight — the daemon worker will exit naturally once
+        its current call returns. Caller MUST also detach any callbacks
+        BEFORE calling stop() if it wants to be sure no late callbacks
+        fire after stop returns.
+        """
         self._stop_event.set()
         if self._worker:
-            self._worker.join(timeout=self._interval_seconds * 3)
+            # Short timeout so we don't freeze the Qt main thread while a
+            # transcribe round is finishing. Worker is a daemon and will
+            # exit on its own after its current call returns.
+            self._worker.join(timeout=0.5)
+            if self._worker.is_alive():
+                logger.debug("Worker still mid-round at stop; daemon will exit later")
             self._worker = None
         with self._lock:
             self._chunks.clear()
@@ -323,6 +333,11 @@ class StreamingTranscriber:
                 "Streaming round %d: %d segments in %.2fs (window=%.2fs)",
                 self._round, len(segments), elapsed, window.size / self._sample_rate,
             )
+
+            # If stop was requested while we were transcribing, swallow this
+            # round — late callbacks landing after stop confuse the UI.
+            if self._stop_event.is_set():
+                break
 
             if segments and self._on_segments:
                 try:

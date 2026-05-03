@@ -11,7 +11,11 @@ from PyQt6.QtCore import QObject, pyqtSignal, QTimer, QTimerEvent, QPoint
 
 from .config import get_settings, STATE_IDLE, STATE_RECORDING, STATE_PROCESSING, STATE_ERROR
 from .config import ENGINE_LOCAL, ENGINE_API
-from .config.constants import TRANSCRIPTION_TIMEOUT_SECONDS
+from .config.constants import (
+    TRANSCRIPTION_TIMEOUT_SECONDS,
+    STREAM_WINDOW_SECONDS, STREAM_INTERVAL_SECONDS,
+    STREAM_VAD_MIN_SILENCE_MS, STREAM_FOCUS_SETTLE_MS,
+)
 from .config.logging_config import get_logger
 from .audio import AudioRecorder, validate_audio
 from .recognition import (
@@ -46,6 +50,7 @@ class VoiceInputApp(QObject):
     streaming_committed = pyqtSignal(str)
     streaming_tentative = pyqtSignal(str)
     _hotkey_signal = pyqtSignal(object)  # HWND from hotkey thread → main thread
+    _command_hotkey_signal = pyqtSignal(object)  # HWND from command hotkey thread
 
     def __init__(self, app: QApplication):
         super().__init__()
@@ -75,6 +80,11 @@ class VoiceInputApp(QObject):
         logger.debug("Creating command processor")
         self._command_processor = CommandProcessor()
         self._hotkey_manager = HotkeyManager()
+        # Separate listener for the command-only capture hotkey
+        self._command_hotkey_manager = HotkeyManager()
+        # Tracks whether the recorder is currently capturing for a command
+        # (vs dictation). Mutually exclusive with dictation recording.
+        self._command_capturing = False
 
         # Streaming-mode state (None when not active)
         self._streamer: StreamingTranscriber | None = None
@@ -107,17 +117,24 @@ class VoiceInputApp(QObject):
         self.streaming_tentative.connect(self._on_streaming_tentative)
         self.error_occurred.connect(self._on_error)
         self._hotkey_signal.connect(self._toggle_with_focus)
+        self._command_hotkey_signal.connect(self._toggle_command_capture)
 
         # Audio level callback
         self._recorder.set_level_callback(self._on_audio_level_raw)
 
     def _setup_hotkey(self) -> None:
-        """Setup global hotkey."""
-        logger.debug("Setting up global hotkey: %s", self._settings.hotkey)
+        """Setup both global hotkeys (dictation + command)."""
+        logger.debug("Setting up dictation hotkey: %s", self._settings.hotkey)
         self._hotkey_manager.set_hotkey(self._settings.hotkey)
         self._hotkey_manager.set_callback(self._on_hotkey_pressed)
         self._hotkey_manager.start()
-        logger.info("Global hotkey listener started")
+
+        logger.debug("Setting up command hotkey: %s", self._settings.command_hotkey)
+        self._command_hotkey_manager.set_hotkey(self._settings.command_hotkey)
+        self._command_hotkey_manager.set_callback(self._on_command_hotkey_pressed)
+        self._command_hotkey_manager.start()
+
+        logger.info("Hotkey listeners started (dictation + command)")
 
     def _setup_ui(self) -> None:
         """Setup UI components."""
@@ -292,50 +309,43 @@ class VoiceInputApp(QObject):
     # ── Streaming pipeline (UI thread, fed by Qt signals from worker) ────
 
     def _on_streaming_committed(self, raw_text: str) -> None:
-        """A new committed delta arrived from the streamer.
+        """A new committed dictation delta arrived from the streamer.
 
-        Apply the standard cleanup → classify → inject/fire pipeline at the
-        DELTA level. A wake-word command is recognised only when the delta
-        STARTS with the wake word (segment-start semantics). Other text is
-        cleaned up (spoken punctuation etc.) and pasted into the focused
-        editor.
+        Streaming is PURE DICTATION — commands have their own hotkey and
+        flow (see _on_command_hotkey). The classify-per-delta logic from
+        earlier S3 was removed because it created lifecycle hazards
+        (command nulled _saved_hwnd → subsequent dictation discarded).
         """
         if not raw_text or not raw_text.strip():
-            return
-
-        # Classify on the raw text (cleanup adds capitalisation/punctuation
-        # that hurts fuzzy matching, same reason as batch path).
-        if self._settings.commands_enabled:
-            classification, cmd_result = classify_transcription(
-                raw_text, threshold=self._settings.command_threshold
-            )
-        else:
-            classification, cmd_result = ("dictation", None)
-
-        if classification == "command" and cmd_result and cmd_result.keystroke:
-            logger.info("Streaming command: %s", cmd_result)
-            self._on_command_detected(cmd_result)
-            # Don't inject the command text as dictation — it's an action.
             return
 
         cleaned = cleanup_text(raw_text)
         if not cleaned:
             return
 
-        # Restore focus to the saved target if needed; only the FIRST commit
-        # in a session needs the bring-to-front, subsequent commits go to
-        # whatever is now focused (the same window, since we just put it
-        # there). If user clicked away, their text goes wherever they pointed.
+        # First commit needs an explicit focus restore + settle delay.
+        # Subsequent commits paste immediately into the still-focused target.
+        # Set _streaming_injected_any synchronously (BEFORE the QTimer fires)
+        # so a second commit arriving inside the settle window doesn't
+        # double-restore focus and double-inject (regression of e576c01).
         if not self._streaming_injected_any:
             hwnd = self._saved_hwnd
             if hwnd and is_window_valid(hwnd):
                 restore_foreground_window(hwnd)
-                # Settle delay before first paste
-                QTimer.singleShot(150, lambda: self._inject_streaming_chunk(cleaned))
+                self._streaming_injected_any = True  # set before timer fires
+                QTimer.singleShot(
+                    STREAM_FOCUS_SETTLE_MS,
+                    lambda t=cleaned: self._inject_streaming_chunk(t),
+                )
                 return
             else:
-                logger.warning("Streaming: no valid focus target — discarding %r", cleaned[:40])
-                return
+                # No valid target: log once, then absorb future deltas as
+                # subsequent-chunks (which will at least try to paste into
+                # whatever is currently foreground, even if it's not the
+                # original target).
+                logger.warning("Streaming: no valid focus target on first delta")
+                self._streaming_injected_any = True
+                # fall through to subsequent-chunks path
 
         # Subsequent chunks: paste immediately, prepend a space so words
         # don't smash together across deltas.
@@ -422,6 +432,20 @@ class VoiceInputApp(QObject):
             logger.info("Hotkey pressed, saved HWND=%s", hwnd)
         self._hotkey_signal.emit(hwnd)
 
+    def _on_command_hotkey_pressed(self) -> None:
+        """Command-only capture hotkey pressed (hotkey thread).
+
+        Same external-HWND filter as the dictation hotkey. Emits to UI
+        thread via _command_hotkey_signal.
+        """
+        hwnd = get_foreground_window_if_external()
+        if not hwnd:
+            hwnd = self._last_external_hwnd
+            logger.info("Command hotkey: foreground was self, tracked HWND=%s", hwnd)
+        else:
+            logger.info("Command hotkey pressed, HWND=%s", hwnd)
+        self._command_hotkey_signal.emit(hwnd)
+
     def _on_widget_clicked(self) -> None:
         """Handle widget click — use tracked external HWND then toggle.
 
@@ -450,6 +474,98 @@ class VoiceInputApp(QObject):
         if self._state == STATE_IDLE:
             self._saved_hwnd = saved_hwnd
         self.toggle_recording()
+
+    # ── Command-only capture lifecycle ────────────────────────────────────
+
+    def _toggle_command_capture(self, saved_hwnd: int | None) -> None:
+        """Toggle a command-only recording session (UI thread).
+
+        Press → start brief recording. Press again → stop, transcribe,
+        classify (no wake word required), fire keystroke. Mutually
+        exclusive with dictation: ignored if dictation is in flight.
+        """
+        if self._command_capturing:
+            self._stop_command_capture()
+            return
+
+        # Refuse if dictation/processing is active — clear UX over magic.
+        if self._state != STATE_IDLE:
+            logger.info("Command hotkey ignored: state=%s (not IDLE)", self._state)
+            return
+
+        self._saved_hwnd = saved_hwnd
+        self._start_command_capture()
+
+    def _start_command_capture(self) -> None:
+        """Begin recording for a command (uses batch path, no streaming)."""
+        if self._recorder.is_recording():
+            logger.debug("Command capture refused: recorder already busy")
+            return
+        logger.info("Starting command capture")
+        self._command_capturing = True
+        # Use RECORDING state — same widget colour cue as dictation. The
+        # absence of a bar strip strip movement won't matter for short
+        # commands; future polish could add a distinct command-mode tint.
+        self.state_changed.emit(STATE_RECORDING, "Command...")
+        self._recorder.start()
+
+    def _stop_command_capture(self) -> None:
+        """Stop command recording, transcribe, classify (no wake word), fire."""
+        if not self._command_capturing:
+            return
+        logger.info("Stopping command capture")
+        self._command_capturing = False
+        self.state_changed.emit(STATE_PROCESSING, "Recognizing command...")
+        self._processing = True
+
+        audio_path = self._recorder.stop()
+        if audio_path is None or not validate_audio(audio_path):
+            logger.warning("Command capture: no audio")
+            self._processing = False
+            self._saved_hwnd = None
+            self.error_occurred.emit("No audio for command")
+            return
+
+        # Transcribe in background; result handled by _on_command_transcribed
+        threading.Thread(
+            target=self._transcribe_command,
+            args=(audio_path,),
+            daemon=True,
+        ).start()
+
+    def _transcribe_command(self, audio_path: Path) -> None:
+        """Background-thread transcription for command capture."""
+        try:
+            recognizer = self._local_recognizer
+            recognizer.set_model(self._settings.model)
+            # No initial_prompt for commands — vocabulary bias would push
+            # the model AWAY from short command words.
+            result = recognizer.transcribe(audio_path, self._settings.language)
+            try:
+                os.unlink(audio_path)
+            except Exception:
+                pass
+
+            if not result.success or not result.text.strip():
+                self.error_occurred.emit(result.error or "No speech detected")
+                return
+
+            classification, cmd_result = classify_transcription(
+                result.text,
+                threshold=self._settings.command_threshold,
+                require_wake_word=False,
+            )
+            self._processing = False
+            if classification == "command" and cmd_result:
+                self.command_detected.emit(cmd_result)
+            else:
+                logger.info("Command capture: no match for %r", result.text[:60])
+                # Surface as error so the user sees something happened
+                self.error_occurred.emit(f"No command match: {result.text.strip()}")
+        except Exception as e:
+            logger.exception("Command transcription error: %s", e)
+            self._processing = False
+            self.error_occurred.emit(str(e))
 
     def toggle_recording(self) -> None:
         """Toggle recording state."""
@@ -498,11 +614,11 @@ class VoiceInputApp(QObject):
         self._streamer = StreamingTranscriber(
             self._local_recognizer,
             sample_rate=SAMPLE_RATE,
-            window_seconds=12.0,
-            interval_seconds=1.0,
+            window_seconds=STREAM_WINDOW_SECONDS,
+            interval_seconds=STREAM_INTERVAL_SECONDS,
             language=self._settings.language,
             initial_prompt=initial_prompt,
-            vad_min_silence_ms=500,
+            vad_min_silence_ms=STREAM_VAD_MIN_SILENCE_MS,
             on_committed=lambda t: self.streaming_committed.emit(t),
             on_tentative=lambda t: self.streaming_tentative.emit(t),
         )
@@ -684,6 +800,7 @@ class VoiceInputApp(QObject):
             self._settings_window = SettingsWindow()
             self._settings_window.settings_changed.connect(self._on_settings_changed)
             self._settings_window.hotkey_changed.connect(self._on_hotkey_changed)
+            self._settings_window.command_hotkey_changed.connect(self._on_command_hotkey_changed)
             self._settings_window.widget_size_changed.connect(self._on_widget_size_changed)
 
         # Ensure window is visible and focused
@@ -707,12 +824,20 @@ class VoiceInputApp(QObject):
         self._api_recognizer.set_api_key(self._settings.openai_api_key)
 
     def _on_hotkey_changed(self, hotkey: dict) -> None:
-        """Handle hotkey change."""
-        logger.info("Hotkey changed to: %s", hotkey)
+        """Handle dictation hotkey change."""
+        logger.info("Dictation hotkey changed to: %s", hotkey)
         self._hotkey_manager.stop()
         self._hotkey_manager.set_hotkey(hotkey)
         self._hotkey_manager.start()
-        logger.debug("Hotkey listener restarted with new hotkey")
+        logger.debug("Dictation hotkey listener restarted")
+
+    def _on_command_hotkey_changed(self, hotkey: dict) -> None:
+        """Handle command hotkey change."""
+        logger.info("Command hotkey changed to: %s", hotkey)
+        self._command_hotkey_manager.stop()
+        self._command_hotkey_manager.set_hotkey(hotkey)
+        self._command_hotkey_manager.start()
+        logger.debug("Command hotkey listener restarted")
 
     def _on_widget_size_changed(self, size_key: str) -> None:
         """Handle widget size change."""
@@ -733,6 +858,19 @@ class VoiceInputApp(QObject):
         self._processing = False
         self._transcription_thread = None
         self._saved_hwnd = None
+        self._command_capturing = False
+        self._streaming_injected_any = False
+
+        # Tear down any active streamer (worker thread + buffer) so reset
+        # doesn't leave an orphan thread feeding callbacks into a UI that
+        # thinks it's idle.
+        if self._streamer is not None:
+            try:
+                self._recorder.set_chunk_callback(None)
+                self._streamer.stop()
+            except Exception as e:
+                logger.warning("Error stopping streamer during reset: %s", e)
+            self._streamer = None
 
         # Hide callout
         self._callout.clear()
@@ -763,6 +901,13 @@ class VoiceInputApp(QObject):
         # Stop everything
         self._focus_tracker.stop()
         self._hotkey_manager.stop()
+        self._command_hotkey_manager.stop()
+        if self._streamer is not None:
+            try:
+                self._streamer.stop()
+            except Exception:
+                pass
+            self._streamer = None
         self._recorder.close_stream()
 
         # Hide UI
@@ -796,10 +941,19 @@ class VoiceInputApp(QObject):
             logger.debug("Saving widget position")
             self._settings.widget_position = self._widget.save_position()
 
-        # Stop focus tracker and hotkey listener
+        # Stop focus tracker and hotkey listeners
         self._focus_tracker.stop()
-        logger.debug("Stopping hotkey listener")
+        logger.debug("Stopping hotkey listeners")
         self._hotkey_manager.stop()
+        self._command_hotkey_manager.stop()
+
+        # Stop any active streamer
+        if self._streamer is not None:
+            try:
+                self._streamer.stop()
+            except Exception:
+                pass
+            self._streamer = None
 
         # Cancel any recording
         logger.debug("Cancelling any active recording")
