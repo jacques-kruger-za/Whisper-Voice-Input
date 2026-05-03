@@ -284,10 +284,17 @@ class StreamingTranscriber:
 
             t0 = time.perf_counter()
             try:
+                # Preview rounds DELIBERATELY do not pass initial_prompt.
+                # Whisper latches onto prompt words on short/weak windows
+                # and repeats them ("Jeanré, Jeanré, Jeanré..."), polluting
+                # the preview UI. The vocab bias still applies at finalize
+                # where it matters (the committed text). Trade-off:
+                # marginal preview accuracy on custom names is worse, but
+                # the spam is gone and the editor still gets boosted text.
                 segments = self._recognizer.transcribe_array(
                     window,
                     language=self._language,
-                    initial_prompt=self._initial_prompt,
+                    initial_prompt=None,
                     vad_min_silence_ms=self._vad_min_silence_ms,
                 )
             except Exception as e:

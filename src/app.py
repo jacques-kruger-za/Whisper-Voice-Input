@@ -53,6 +53,7 @@ class VoiceInputApp(QObject):
     error_occurred = pyqtSignal(str)
     # Streaming-mode signals (worker thread → UI thread)
     streaming_preview = pyqtSignal(str)  # rolling-window preview, may flicker
+    streaming_finalized = pyqtSignal(str)  # finalize-thread → UI thread, raw text
     _hotkey_signal = pyqtSignal(object)  # HWND from hotkey thread → main thread
     _command_hotkey_signal = pyqtSignal(object)  # HWND from command hotkey thread
 
@@ -138,6 +139,7 @@ class VoiceInputApp(QObject):
         self.transcription_segment.connect(self._on_segment)
         self.command_detected.connect(self._on_command_detected)
         self.streaming_preview.connect(self._on_streaming_preview)
+        self.streaming_finalized.connect(self._on_streaming_finalized)
         self.error_occurred.connect(self._on_error)
         self._hotkey_signal.connect(self._toggle_with_focus)
         self._command_hotkey_signal.connect(self._toggle_command_capture)
@@ -349,17 +351,13 @@ class VoiceInputApp(QObject):
             self._preview_window.set_text(raw_text)
 
     def _finalize_streaming_utterance(self) -> None:
-        """End-of-utterance: run final transcribe + cleanup + inject.
-
-        Called when the silence-poll timer detects a natural pause after
-        speech. Runs a fresh transcribe on the WHOLE audio captured since
-        the last finalize so the committed text isn't tied to any
-        particular rolling-window state.
+        """End-of-utterance (mid-session, silence-detected): run final
+        transcribe and inject. Synchronous — the user just paused, so the
+        ~1s blocking is at a natural beat. Stop-time finalize is async
+        (see _stop_streaming) because the user is actively waiting then.
         """
         if self._streamer is None:
             return
-        # Pause the preview worker so the audio buffer is stable while we
-        # snapshot it for the final transcribe.
         was_paused = self._streamer.is_paused
         self._streamer.pause()
         try:
@@ -367,13 +365,19 @@ class VoiceInputApp(QObject):
         finally:
             if not was_paused:
                 self._streamer.resume()
+        self._inject_finalized_text(text)
 
-        if not text or not text.strip():
+    def _inject_finalized_text(self, raw_text: str) -> None:
+        """Apply cleanup + capitalisation rules and inject into the
+        focused editor. Shared by mid-session finalize and stop-time
+        finalize so behaviour stays consistent across both paths.
+        """
+        if not raw_text or not raw_text.strip():
             logger.info("Finalize produced no text — nothing to inject")
             self._fade_preview()
             return
 
-        cleaned = cleanup_text(text)
+        cleaned = cleanup_text(raw_text)
         if not cleaned:
             self._fade_preview()
             return
@@ -849,33 +853,68 @@ class VoiceInputApp(QObject):
         self._timeout_timer.start(TRANSCRIPTION_TIMEOUT_SECONDS * 1000)
 
     def _stop_streaming(self) -> None:
-        """Tear down streaming. If there's pending un-finalized speech in
-        the buffer, run a final pass on it so the user doesn't lose what
-        they just said by pressing the hotkey to stop.
+        """Tear down streaming. Snappy: state flips immediately, finalize
+        runs on a background thread, teardown completes on result.
         """
         logger.info("Stopping streaming")
         # Stop polling FIRST so a tick mid-teardown can't re-trigger transitions.
         self._silence_poll_timer.stop()
-
-        # If speech happened and we haven't finalized recently, capture it
-        # before tearing down. This is the "user pressed hotkey while still
-        # mid-sentence" path.
-        if self._streamer is not None and self._silence_monitor.speech_detected():
-            try:
-                self._finalize_streaming_utterance()
-            except Exception as e:
-                logger.warning("Final-flush at stop failed: %s", e)
-
-        # Detach the chunk callback so no further audio reaches the streamer.
+        # Detach chunk callback immediately — no further audio enters the
+        # streamer's buffer. This freezes the utterance buffer for the
+        # finalize that's about to run.
         self._recorder.set_chunk_callback(None)
-        # Cancel rather than stop() so we don't write a redundant WAV.
+
+        had_speech = (
+            self._streamer is not None
+            and self._silence_monitor.speech_detected()
+        )
+
+        if had_speech and self._streamer is not None:
+            # Show user that work is in flight while finalize runs (~2-3s
+            # for base/small on CPU). Without this the widget stays blue
+            # for several seconds after hotkey release — feels broken.
+            self.state_changed.emit(STATE_PROCESSING, "Finalizing...")
+            streamer = self._streamer
+            threading.Thread(
+                target=self._finalize_on_stop_thread,
+                args=(streamer,),
+                daemon=True,
+            ).start()
+        else:
+            # No speech to capture — just tear down immediately.
+            self._teardown_streaming()
+
+    def _finalize_on_stop_thread(self, streamer: StreamingTranscriber) -> None:
+        """Background thread: run finalize on the captured streamer so the
+        UI can repaint while Whisper crunches. Signals back via
+        streaming_finalized.
+        """
+        try:
+            text = streamer.finalize()
+        except Exception as e:
+            logger.exception("Finalize-on-stop thread failed: %s", e)
+            text = ""
+        self.streaming_finalized.emit(text)
+
+    def _on_streaming_finalized(self, raw_text: str) -> None:
+        """UI thread: finalize completed (from background thread). Apply
+        cleanup, inject if non-empty, then complete the streaming teardown.
+        """
+        if raw_text and raw_text.strip():
+            self._inject_finalized_text(raw_text)
+        else:
+            logger.info("Finalize-on-stop produced no text")
+            self._fade_preview()
+        self._teardown_streaming()
+
+    def _teardown_streaming(self) -> None:
+        """Final cleanup of streaming state. Always called on UI thread."""
         self._recorder.cancel()
         if self._streamer:
             self._streamer.stop()
             self._streamer = None
         if self._preview_window is not None:
             self._preview_window.fade_out()
-
         self.state_changed.emit(STATE_IDLE, "Done!")
         QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
 
