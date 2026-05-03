@@ -9,6 +9,7 @@ from .constants import (
     APP_NAME,
     APP_AUTHOR,
     DEFAULT_HOTKEY,
+    DEFAULT_COMMAND_HOTKEY,
     DEFAULT_MODEL,
     DEFAULT_LANGUAGE,
     DEFAULT_ENGINE,
@@ -30,9 +31,14 @@ class Settings:
         """Return default settings."""
         return {
             "hotkey": DEFAULT_HOTKEY.copy(),
+            "command_hotkey": DEFAULT_COMMAND_HOTKEY.copy(),
             "audio_device": None,  # None = system default
             "engine": DEFAULT_ENGINE,
             "model": DEFAULT_MODEL,
+            # Streaming uses a separate (typically smaller/faster) model so
+            # rounds finish in ~1s wall time. 'base' is the practical default
+            # on CPUs; 'tiny' for slower hardware; 'small'+ usually too slow.
+            "streaming_model": "base",
             "language": DEFAULT_LANGUAGE,
             "openai_api_key": "",
             "start_with_windows": False,
@@ -45,6 +51,7 @@ class Settings:
             "commands_enabled": True,
             "custom_punctuation": {},
             "custom_commands": {},
+            "streaming_mode": False,
         }
 
     def _load(self) -> None:
@@ -84,6 +91,15 @@ class Settings:
         self.set("hotkey", value)
 
     @property
+    def command_hotkey(self) -> dict:
+        """Hotkey for command-only capture (separate from dictation)."""
+        return self._settings.get("command_hotkey", DEFAULT_COMMAND_HOTKEY.copy())
+
+    @command_hotkey.setter
+    def command_hotkey(self, value: dict) -> None:
+        self.set("command_hotkey", value)
+
+    @property
     def audio_device(self) -> str | None:
         """Get selected audio device."""
         return self._settings.get("audio_device")
@@ -109,6 +125,19 @@ class Settings:
     @model.setter
     def model(self, value: str) -> None:
         self.set("model", value)
+
+    @property
+    def streaming_model(self) -> str:
+        """Whisper model used by the streaming pipeline. Should usually be
+        smaller/faster than the batch model so rounds finish in ~1s on CPU.
+        Falls back to 'base' if the saved value is missing or empty.
+        """
+        v = self._settings.get("streaming_model")
+        return v if v else "base"
+
+    @streaming_model.setter
+    def streaming_model(self, value: str) -> None:
+        self.set("streaming_model", value)
 
     @property
     def language(self) -> str:
@@ -223,6 +252,15 @@ class Settings:
     @custom_commands.setter
     def custom_commands(self, value: dict[str, str]) -> None:
         self.set("custom_commands", dict(value))
+
+    @property
+    def streaming_mode(self) -> bool:
+        """Real-time streaming transcription (vs record-then-batch)."""
+        return bool(self._settings.get("streaming_mode", False))
+
+    @streaming_mode.setter
+    def streaming_mode(self, value: bool) -> None:
+        self.set("streaming_mode", bool(value))
 
 
 # Global settings instance

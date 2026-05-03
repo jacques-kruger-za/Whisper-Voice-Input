@@ -11,13 +11,24 @@ from PyQt6.QtCore import QObject, pyqtSignal, QTimer, QTimerEvent, QPoint
 
 from .config import get_settings, STATE_IDLE, STATE_RECORDING, STATE_PROCESSING, STATE_ERROR
 from .config import ENGINE_LOCAL, ENGINE_API
-from .config.constants import TRANSCRIPTION_TIMEOUT_SECONDS
+from .config.constants import (
+    TRANSCRIPTION_TIMEOUT_SECONDS,
+    STREAM_WINDOW_SECONDS, STREAM_INTERVAL_SECONDS,
+    STREAM_VAD_MIN_SILENCE_MS, STREAM_FOCUS_SETTLE_MS,
+    STATE_COMMAND,
+    STREAM_AUTO_PAUSE_SECONDS, STREAM_AUTO_STOP_SECONDS,
+    STREAM_FINALIZE_AFTER_SPEECH_SECONDS,
+    COMMAND_AUTO_STOP_AFTER_SPEECH_SECONDS, COMMAND_NO_SPEECH_TIMEOUT_SECONDS,
+    SILENCE_POLL_INTERVAL_MS,
+)
 from .config.logging_config import get_logger
-from .audio import AudioRecorder, validate_audio
+from .audio import AudioRecorder, validate_audio, SilenceMonitor
 from .recognition import (
     LocalWhisperRecognizer, APIWhisperRecognizer, cleanup_text,
     CommandProcessor, classify_transcription,
+    StreamingTranscriber,
 )
+from .config.constants import SAMPLE_RATE
 from .input import HotkeyManager, inject_text
 from .input.window_focus import (
     save_foreground_window, restore_foreground_window,
@@ -40,7 +51,11 @@ class VoiceInputApp(QObject):
     transcription_segment = pyqtSignal(str)  # per-segment streaming
     command_detected = pyqtSignal(object)  # CommandResult from background thread
     error_occurred = pyqtSignal(str)
+    # Streaming-mode signals (worker thread → UI thread)
+    streaming_preview = pyqtSignal(str)  # rolling-window preview, may flicker
+    streaming_finalized = pyqtSignal(str)  # finalize-thread → UI thread, raw text
     _hotkey_signal = pyqtSignal(object)  # HWND from hotkey thread → main thread
+    _command_hotkey_signal = pyqtSignal(object)  # HWND from command hotkey thread
 
     def __init__(self, app: QApplication):
         super().__init__()
@@ -65,11 +80,42 @@ class VoiceInputApp(QObject):
         self._recorder = AudioRecorder(self._settings.audio_device)
         logger.debug("Creating local recognizer with model: %s", self._settings.model)
         self._local_recognizer = LocalWhisperRecognizer(self._settings.model)
+        # Separate recognizer for streaming. Holds its own (typically smaller)
+        # model loaded into memory. Lets users keep 'small' for batch quality
+        # and 'base' for streaming speed without paying re-load cost on every
+        # mode switch.
+        logger.debug("Creating streaming recognizer with model: %s", self._settings.streaming_model)
+        self._streaming_recognizer = LocalWhisperRecognizer(self._settings.streaming_model)
         logger.debug("Creating API recognizer")
         self._api_recognizer = APIWhisperRecognizer(self._settings.openai_api_key)
         logger.debug("Creating command processor")
         self._command_processor = CommandProcessor()
         self._hotkey_manager = HotkeyManager()
+        # Separate listener for the command-only capture hotkey
+        self._command_hotkey_manager = HotkeyManager()
+        # Tracks whether the recorder is currently capturing for a command
+        # (vs dictation). Mutually exclusive with dictation recording.
+        self._command_capturing = False
+
+        # Streaming-mode state (None when not active)
+        self._streamer: StreamingTranscriber | None = None
+        # Live preview UI surface — built lazily on first stream start so it
+        # doesn't pay the QWidget cost when the user never enables streaming.
+        self._preview_window = None
+        # Whether anything has been injected during the current streaming
+        # session — drives leading-space behaviour between committed deltas.
+        self._streaming_injected_any = False
+        # Whether the LAST committed chunk ended a sentence (.,!?). When
+        # False, we lowercase the first letter of the next chunk so a
+        # mid-sentence commit boundary doesn't produce "...what happens
+        # As we proceed" with a stray capital.
+        self._streaming_last_ended_sentence = False
+
+        # VAD-driven session lifecycle: shared monitor (only one modality is
+        # active at a time), polled by a Qt timer to drive auto-pause/auto-stop.
+        self._silence_monitor = SilenceMonitor()
+        self._silence_poll_timer = QTimer(self)
+        self._silence_poll_timer.timeout.connect(self._poll_silence)
 
         # UI
         self._widget: FloatingWidget | None = None
@@ -92,19 +138,28 @@ class VoiceInputApp(QObject):
         self.transcription_complete.connect(self._on_transcription_complete)
         self.transcription_segment.connect(self._on_segment)
         self.command_detected.connect(self._on_command_detected)
+        self.streaming_preview.connect(self._on_streaming_preview)
+        self.streaming_finalized.connect(self._on_streaming_finalized)
         self.error_occurred.connect(self._on_error)
         self._hotkey_signal.connect(self._toggle_with_focus)
+        self._command_hotkey_signal.connect(self._toggle_command_capture)
 
         # Audio level callback
         self._recorder.set_level_callback(self._on_audio_level_raw)
 
     def _setup_hotkey(self) -> None:
-        """Setup global hotkey."""
-        logger.debug("Setting up global hotkey: %s", self._settings.hotkey)
+        """Setup both global hotkeys (dictation + command)."""
+        logger.debug("Setting up dictation hotkey: %s", self._settings.hotkey)
         self._hotkey_manager.set_hotkey(self._settings.hotkey)
         self._hotkey_manager.set_callback(self._on_hotkey_pressed)
         self._hotkey_manager.start()
-        logger.info("Global hotkey listener started")
+
+        logger.debug("Setting up command hotkey: %s", self._settings.command_hotkey)
+        self._command_hotkey_manager.set_hotkey(self._settings.command_hotkey)
+        self._command_hotkey_manager.set_callback(self._on_command_hotkey_pressed)
+        self._command_hotkey_manager.start()
+
+        logger.info("Hotkey listeners started (dictation + command)")
 
     def _setup_ui(self) -> None:
         """Setup UI components."""
@@ -175,7 +230,13 @@ class VoiceInputApp(QObject):
             self._tray.set_state(state)
 
     def _on_audio_level_raw(self, level: float) -> None:
-        """Handle audio level from recorder thread."""
+        """Handle audio level from recorder thread.
+
+        Two consumers: the audio_level Qt signal (drives the bar strip on the
+        UI thread) and the SilenceMonitor (drives VAD-based session lifecycle).
+        Both are cheap; SilenceMonitor.update is a single threshold compare.
+        """
+        self._silence_monitor.update(level)
         self.audio_level.emit(level)
 
     def _on_audio_level(self, level: float) -> None:
@@ -276,6 +337,172 @@ class VoiceInputApp(QObject):
         self.state_changed.emit(STATE_IDLE, msg)
         QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
 
+    # ── Streaming pipeline (UI thread, fed by Qt signals from worker) ────
+
+    def _on_streaming_preview(self, raw_text: str) -> None:
+        """Live preview text from the streamer (rolling-window, may flicker).
+
+        Drives the preview UI surface ONLY — never injects into the user's
+        editor. The editor sees text only at finalize (silence-detected
+        end-of-utterance), where we run a fresh full-quality transcribe
+        on the whole utterance audio for accuracy.
+        """
+        if self._preview_window is not None:
+            self._preview_window.set_text(raw_text)
+
+    def _finalize_streaming_utterance(self) -> None:
+        """End-of-utterance (mid-session, silence-detected): run final
+        transcribe and inject. Synchronous — the user just paused, so the
+        ~1s blocking is at a natural beat. Stop-time finalize is async
+        (see _stop_streaming) because the user is actively waiting then.
+        """
+        if self._streamer is None:
+            return
+        was_paused = self._streamer.is_paused
+        self._streamer.pause()
+        try:
+            text = self._streamer.finalize()
+        finally:
+            if not was_paused:
+                self._streamer.resume()
+        self._inject_finalized_text(text)
+
+    def _inject_finalized_text(self, raw_text: str) -> None:
+        """Apply cleanup + capitalisation rules and inject into the
+        focused editor. Shared by mid-session finalize and stop-time
+        finalize so behaviour stays consistent across both paths.
+        """
+        if not raw_text or not raw_text.strip():
+            logger.info("Finalize produced no text — nothing to inject")
+            self._fade_preview()
+            return
+
+        cleaned = cleanup_text(raw_text)
+        if not cleaned:
+            self._fade_preview()
+            return
+
+        # Cross-utterance capitalisation: lowercase first letter if previous
+        # injection didn't end a sentence (rare across utterances but
+        # possible when user pauses mid-sentence).
+        if (
+            self._streaming_injected_any
+            and not self._streaming_last_ended_sentence
+            and cleaned[0].isupper()
+        ):
+            cleaned = cleaned[0].lower() + cleaned[1:]
+        self._streaming_last_ended_sentence = cleaned.rstrip().endswith((".", "!", "?"))
+
+        # First commit gets focus-restore + settle delay; subsequent
+        # commits paste into the already-focused target.
+        if not self._streaming_injected_any:
+            hwnd = self._saved_hwnd
+            if hwnd and is_window_valid(hwnd):
+                restore_foreground_window(hwnd)
+                self._streaming_injected_any = True
+                QTimer.singleShot(
+                    STREAM_FOCUS_SETTLE_MS,
+                    lambda t=cleaned: self._inject_streaming_chunk(t),
+                )
+                return
+            else:
+                logger.warning("Streaming: no valid focus target at finalize")
+                self._streaming_injected_any = True
+
+        self._inject_streaming_chunk(" " + cleaned)
+
+    def _inject_streaming_chunk(self, text: str) -> None:
+        """Paste finalized utterance text into the focused editor."""
+        if not text:
+            return
+        logger.info("Streaming inject (finalized): %r", text[:80])
+        inject_text(text)
+        self._streaming_injected_any = True
+        self._fade_preview()
+
+    def _fade_preview(self) -> None:
+        """Tell the preview UI to fade its current contents away."""
+        if self._preview_window is not None:
+            self._preview_window.fade_out()
+
+    # ── VAD-driven lifecycle (shared poll handler) ────────────────────────
+
+    def _poll_silence(self) -> None:
+        """Tick handler for silence-driven transitions (UI thread).
+
+        Routes to the appropriate per-modality logic based on what's active.
+        Runs every SILENCE_POLL_INTERVAL_MS while a session is live.
+        """
+        if self._command_capturing:
+            self._poll_silence_command()
+        elif self._streamer is not None:
+            self._poll_silence_streaming()
+
+    def _poll_silence_streaming(self) -> None:
+        """Lifecycle transitions for streaming dictation.
+
+        - Speech detected, then silence ≥ STREAM_FINALIZE_AFTER_SPEECH_SECONDS
+          AND we have un-finalized audio: FINALIZE — run the clean transcribe
+          + inject path. This is the primary "commit" trigger now.
+        - Continuous silence ≥ STREAM_AUTO_STOP_SECONDS: end the session.
+        - Continuous silence ≥ STREAM_AUTO_PAUSE_SECONDS (and no speech yet
+          OR already finalized): pause preview rounds. Audio still buffers.
+        - Otherwise: ensure preview is running.
+        """
+        silence = self._silence_monitor.silence_duration()
+
+        # End-of-utterance finalize: speech happened, then a clear pause.
+        if (
+            self._silence_monitor.speech_detected()
+            and silence >= STREAM_FINALIZE_AFTER_SPEECH_SECONDS
+        ):
+            logger.info("Streaming finalize: %.2fs silence after speech", silence)
+            self._finalize_streaming_utterance()
+            # Reset the silence monitor so the next utterance's timing starts fresh.
+            self._silence_monitor.reset()
+            return
+
+        if silence >= STREAM_AUTO_STOP_SECONDS:
+            logger.info("Streaming auto-stop after %.1fs silence", silence)
+            self._stop_streaming()
+            return
+        if silence >= STREAM_AUTO_PAUSE_SECONDS:
+            if self._streamer and not self._streamer.is_paused:
+                self._streamer.pause()
+        else:
+            if self._streamer and self._streamer.is_paused:
+                self._streamer.resume()
+
+    def _poll_silence_command(self) -> None:
+        """Auto-fire / auto-cancel transitions for command capture.
+
+        - Speech detected, then silence ≥ COMMAND_AUTO_STOP_AFTER_SPEECH:
+          fire (run the existing _stop_command_capture path → transcribe → keystroke).
+        - No speech ever, elapsed ≥ COMMAND_NO_SPEECH_TIMEOUT: cancel.
+        """
+        if self._silence_monitor.speech_detected():
+            silence = self._silence_monitor.silence_duration()
+            if silence >= COMMAND_AUTO_STOP_AFTER_SPEECH_SECONDS:
+                logger.info("Command auto-fire after %.2fs silence post-speech", silence)
+                self._stop_command_capture()
+        else:
+            elapsed = self._silence_monitor.elapsed_since_start()
+            if elapsed >= COMMAND_NO_SPEECH_TIMEOUT_SECONDS:
+                logger.info("Command auto-cancel: no speech in %.1fs", elapsed)
+                self._cancel_command_capture()
+
+    def _cancel_command_capture(self) -> None:
+        """Abort an in-flight command capture without firing a keystroke."""
+        if not self._command_capturing:
+            return
+        logger.info("Cancelling command capture")
+        self._command_capturing = False
+        self._silence_poll_timer.stop()
+        self._recorder.cancel()
+        self._saved_hwnd = None
+        self.state_changed.emit(STATE_IDLE, "Command cancelled")
+        QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
+
     def _on_error(self, message: str) -> None:
         """Handle error (UI thread)."""
         logger.error("Error occurred: %s", message)
@@ -340,6 +567,20 @@ class VoiceInputApp(QObject):
             logger.info("Hotkey pressed, saved HWND=%s", hwnd)
         self._hotkey_signal.emit(hwnd)
 
+    def _on_command_hotkey_pressed(self) -> None:
+        """Command-only capture hotkey pressed (hotkey thread).
+
+        Same external-HWND filter as the dictation hotkey. Emits to UI
+        thread via _command_hotkey_signal.
+        """
+        hwnd = get_foreground_window_if_external()
+        if not hwnd:
+            hwnd = self._last_external_hwnd
+            logger.info("Command hotkey: foreground was self, tracked HWND=%s", hwnd)
+        else:
+            logger.info("Command hotkey pressed, HWND=%s", hwnd)
+        self._command_hotkey_signal.emit(hwnd)
+
     def _on_widget_clicked(self) -> None:
         """Handle widget click — use tracked external HWND then toggle.
 
@@ -369,6 +610,115 @@ class VoiceInputApp(QObject):
             self._saved_hwnd = saved_hwnd
         self.toggle_recording()
 
+    # ── Command-only capture lifecycle ────────────────────────────────────
+
+    def _toggle_command_capture(self, saved_hwnd: int | None) -> None:
+        """Single-press command lifecycle (UI thread).
+
+        Press → start. The session ends automatically: VAD detects silence
+        after speech and fires the command, OR cancels after the no-speech
+        timeout. A SECOND hotkey press during capture means CANCEL — the
+        user is aborting (e.g. they said the wrong thing). Mutually
+        exclusive with dictation: ignored if dictation is in flight.
+        """
+        if self._command_capturing:
+            # Second press = cancel, not fire. The fire path is VAD-driven.
+            self._cancel_command_capture()
+            return
+
+        # Refuse if dictation/processing is active — clear UX over magic.
+        if self._state != STATE_IDLE:
+            logger.info("Command hotkey ignored: state=%s (not IDLE)", self._state)
+            return
+
+        self._saved_hwnd = saved_hwnd
+        self._start_command_capture()
+
+    def _start_command_capture(self) -> None:
+        """Begin recording for a command. Single-press UX: VAD auto-stop
+        fires after the user finishes speaking (or auto-cancel if they
+        never speak), so they don't need to press the hotkey again.
+        """
+        if self._recorder.is_recording():
+            logger.debug("Command capture refused: recorder already busy")
+            return
+        logger.info("Starting command capture")
+        # Distinct visual identity (orange) from dictation (blue).
+        self.state_changed.emit(STATE_COMMAND, "Command...")
+        try:
+            self._recorder.start()
+        except Exception as e:
+            logger.exception("Recorder failed to start (command): %s", e)
+            self._saved_hwnd = None
+            self.error_occurred.emit(
+                "Microphone unavailable. Check Settings → Audio device."
+            )
+            return
+        self._command_capturing = True
+        # Reset and start the silence monitor so the poll timer can decide
+        # when speech-ended → fire, or no-speech-ever → cancel.
+        self._silence_monitor.reset()
+        self._silence_poll_timer.start(SILENCE_POLL_INTERVAL_MS)
+
+    def _stop_command_capture(self) -> None:
+        """Stop command recording, transcribe, classify (no wake word), fire."""
+        if not self._command_capturing:
+            return
+        logger.info("Stopping command capture")
+        self._command_capturing = False
+        self._silence_poll_timer.stop()
+        self.state_changed.emit(STATE_PROCESSING, "Recognizing command...")
+        self._processing = True
+
+        audio_path = self._recorder.stop()
+        if audio_path is None or not validate_audio(audio_path):
+            logger.warning("Command capture: no audio")
+            self._processing = False
+            self._saved_hwnd = None
+            self.error_occurred.emit("No audio for command")
+            return
+
+        # Transcribe in background; result handled by _on_command_transcribed
+        threading.Thread(
+            target=self._transcribe_command,
+            args=(audio_path,),
+            daemon=True,
+        ).start()
+
+    def _transcribe_command(self, audio_path: Path) -> None:
+        """Background-thread transcription for command capture."""
+        try:
+            recognizer = self._local_recognizer
+            recognizer.set_model(self._settings.model)
+            # No initial_prompt for commands — vocabulary bias would push
+            # the model AWAY from short command words.
+            result = recognizer.transcribe(audio_path, self._settings.language)
+            try:
+                os.unlink(audio_path)
+            except Exception:
+                pass
+
+            if not result.success or not result.text.strip():
+                self.error_occurred.emit(result.error or "No speech detected")
+                return
+
+            classification, cmd_result = classify_transcription(
+                result.text,
+                threshold=self._settings.command_threshold,
+                require_wake_word=False,
+            )
+            self._processing = False
+            if classification == "command" and cmd_result:
+                self.command_detected.emit(cmd_result)
+            else:
+                logger.info("Command capture: no match for %r", result.text[:60])
+                # Surface as error so the user sees something happened
+                self.error_occurred.emit(f"No command match: {result.text.strip()}")
+        except Exception as e:
+            logger.exception("Command transcription error: %s", e)
+            self._processing = False
+            self.error_occurred.emit(str(e))
+
     def toggle_recording(self) -> None:
         """Toggle recording state."""
         if self._processing:
@@ -394,30 +744,107 @@ class VoiceInputApp(QObject):
             logger.debug("Toggle recording ignored: state is %s", self._state)
 
     def _start_recording(self) -> None:
-        """Start recording audio."""
+        """Start recording audio (streaming or batch mode).
+
+        Recorder is started FIRST so a hardware/device failure doesn't leave
+        the streaming wiring half-up (which would then immediately auto-stop
+        and mask the real error). Streaming attaches only after the audio
+        stream is open.
+        """
         if self._recorder.is_recording():
             logger.debug("Start recording ignored: already recording")
             return
 
-        logger.info("Starting audio recording")
+        logger.info("Starting audio recording (streaming=%s)", self._settings.streaming_mode)
         self.state_changed.emit(STATE_RECORDING, "Recording...")
-        self._recorder.start()
 
-        # Show callout (empty, ready for segments)
-        self._callout.clear()
-        if self._widget and self._widget.isVisible():
-            pos = self._widget.pos()
-            size = self._widget.width()
-            self._callout.show_at_widget(pos, size)
-        else:
-            self._callout.show_near_tray()
+        try:
+            self._recorder.start()
+        except Exception as e:
+            logger.exception("Recorder failed to start: %s", e)
+            self.error_occurred.emit(
+                "Microphone unavailable. Check Settings → Audio device, "
+                "then Tray → Reset State."
+            )
+            return
+
+        if self._settings.streaming_mode:
+            self._start_streaming()
+
+    @staticmethod
+    def _build_vocab_prompt(vocab: list[str]) -> str | None:
+        """Construct a Whisper initial_prompt from custom vocabulary.
+
+        Whisper treats initial_prompt as the trailing context of an ongoing
+        transcript and biases output accordingly. Sentence-style framing
+        ('Vocabulary: foo, bar.') reads as natural-language context and
+        biases more reliably than a bare comma-separated list. Capped at
+        Whisper's 224-character input budget further upstream.
+
+        NOTE: prompt biasing helps with novel words ('rapidfuzz', made-up
+        names) but is weak for words with common English homophones —
+        Whisper's training distribution dominates. Post-processing alias
+        replacement (separate feature) is the reliable answer for that case.
+        """
+        if not vocab:
+            return None
+        return f"Vocabulary: {', '.join(vocab)}."
+
+    def _start_streaming(self) -> None:
+        """Spin up the streaming transcriber and hook the recorder to feed it."""
+        vocab = self._settings.custom_vocabulary
+        initial_prompt = self._build_vocab_prompt(vocab)
+
+        # Ensure the streaming recognizer matches the user's chosen model.
+        # set_model is cheap when unchanged; reloads on first use otherwise.
+        self._streaming_recognizer.set_model(self._settings.streaming_model)
+
+        self._streaming_injected_any = False
+        self._streaming_last_ended_sentence = True  # treat session start as sentence break
+
+        # Build preview window lazily so first-streaming-launch is the only
+        # time we pay the QWidget construction cost.
+        if self._preview_window is None:
+            from .ui.preview import StreamingPreviewWindow
+            self._preview_window = StreamingPreviewWindow()
+        # Anchor preview to the left of the floating widget.
+        if self._widget is not None:
+            self._preview_window.position_near_widget(
+                self._widget.pos(), self._widget.width(), self._widget.height(),
+            )
+        self._preview_window.clear()
+        self._preview_window.show()
+
+        self._streamer = StreamingTranscriber(
+            self._streaming_recognizer,
+            sample_rate=SAMPLE_RATE,
+            window_seconds=STREAM_WINDOW_SECONDS,
+            interval_seconds=STREAM_INTERVAL_SECONDS,
+            language=self._settings.language,
+            initial_prompt=initial_prompt,
+            vad_min_silence_ms=STREAM_VAD_MIN_SILENCE_MS,
+            on_preview=lambda t: self.streaming_preview.emit(t),
+        )
+        self._streamer.start()
+        # Recorder feeds raw chunks straight into the streamer's buffer.
+        self._recorder.set_chunk_callback(self._streamer.feed)
+        # VAD lifecycle: reset silence monitor + start the poll timer so
+        # auto-pause/auto-stop transitions can fire on the UI thread.
+        self._silence_monitor.reset()
+        self._silence_poll_timer.start(SILENCE_POLL_INTERVAL_MS)
+        logger.info("Streaming mode active")
 
     def _stop_recording(self) -> None:
-        """Stop recording and process audio."""
+        """Stop recording. In streaming mode, finalize stream; in batch, transcribe."""
         if not self._recorder.is_recording():
             logger.debug("Stop recording ignored: not recording")
             return
 
+        if self._streamer is not None:
+            self._stop_streaming()
+            return
+
+        # Batch mode: existing record-then-transcribe path
         logger.info("Stopping audio recording")
         self.state_changed.emit(STATE_PROCESSING, "Processing...")
         self._processing = True
@@ -443,6 +870,72 @@ class VoiceInputApp(QObject):
         # Start transcription timeout (cancellable — prevents stale timeouts
         # from earlier transcriptions from firing during a new one)
         self._timeout_timer.start(TRANSCRIPTION_TIMEOUT_SECONDS * 1000)
+
+    def _stop_streaming(self) -> None:
+        """Tear down streaming. Snappy: state flips immediately, finalize
+        runs on a background thread, teardown completes on result.
+        """
+        logger.info("Stopping streaming")
+        # Stop polling FIRST so a tick mid-teardown can't re-trigger transitions.
+        self._silence_poll_timer.stop()
+        # Detach chunk callback immediately — no further audio enters the
+        # streamer's buffer. This freezes the utterance buffer for the
+        # finalize that's about to run.
+        self._recorder.set_chunk_callback(None)
+
+        had_speech = (
+            self._streamer is not None
+            and self._silence_monitor.speech_detected()
+        )
+
+        if had_speech and self._streamer is not None:
+            # Show user that work is in flight while finalize runs (~2-3s
+            # for base/small on CPU). Without this the widget stays blue
+            # for several seconds after hotkey release — feels broken.
+            self.state_changed.emit(STATE_PROCESSING, "Finalizing...")
+            streamer = self._streamer
+            threading.Thread(
+                target=self._finalize_on_stop_thread,
+                args=(streamer,),
+                daemon=True,
+            ).start()
+        else:
+            # No speech to capture — just tear down immediately.
+            self._teardown_streaming()
+
+    def _finalize_on_stop_thread(self, streamer: StreamingTranscriber) -> None:
+        """Background thread: run finalize on the captured streamer so the
+        UI can repaint while Whisper crunches. Signals back via
+        streaming_finalized.
+        """
+        try:
+            text = streamer.finalize()
+        except Exception as e:
+            logger.exception("Finalize-on-stop thread failed: %s", e)
+            text = ""
+        self.streaming_finalized.emit(text)
+
+    def _on_streaming_finalized(self, raw_text: str) -> None:
+        """UI thread: finalize completed (from background thread). Apply
+        cleanup, inject if non-empty, then complete the streaming teardown.
+        """
+        if raw_text and raw_text.strip():
+            self._inject_finalized_text(raw_text)
+        else:
+            logger.info("Finalize-on-stop produced no text")
+            self._fade_preview()
+        self._teardown_streaming()
+
+    def _teardown_streaming(self) -> None:
+        """Final cleanup of streaming state. Always called on UI thread."""
+        self._recorder.cancel()
+        if self._streamer:
+            self._streamer.stop()
+            self._streamer = None
+        if self._preview_window is not None:
+            self._preview_window.fade_out()
+        self.state_changed.emit(STATE_IDLE, "Done!")
+        QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
 
     def _check_transcription_timeout(self) -> None:
         """Check if transcription has timed out."""
@@ -470,11 +963,8 @@ class VoiceInputApp(QObject):
 
             # Build initial_prompt from custom vocabulary.
             # Presence of words = active. Empty list = no prompt sent.
-            initial_prompt = None
             vocab = self._settings.custom_vocabulary
-            if vocab:
-                initial_prompt = ", ".join(vocab)
-                logger.debug("Custom vocabulary active: %d words", len(vocab))
+            initial_prompt = self._build_vocab_prompt(vocab)
 
             # Transcribe with segment streaming
             logger.debug("Transcribing audio with language: %s", self._settings.language)
@@ -562,6 +1052,7 @@ class VoiceInputApp(QObject):
             self._settings_window = SettingsWindow()
             self._settings_window.settings_changed.connect(self._on_settings_changed)
             self._settings_window.hotkey_changed.connect(self._on_hotkey_changed)
+            self._settings_window.command_hotkey_changed.connect(self._on_command_hotkey_changed)
             self._settings_window.widget_size_changed.connect(self._on_widget_size_changed)
 
         # Ensure window is visible and focused
@@ -585,12 +1076,20 @@ class VoiceInputApp(QObject):
         self._api_recognizer.set_api_key(self._settings.openai_api_key)
 
     def _on_hotkey_changed(self, hotkey: dict) -> None:
-        """Handle hotkey change."""
-        logger.info("Hotkey changed to: %s", hotkey)
+        """Handle dictation hotkey change."""
+        logger.info("Dictation hotkey changed to: %s", hotkey)
         self._hotkey_manager.stop()
         self._hotkey_manager.set_hotkey(hotkey)
         self._hotkey_manager.start()
-        logger.debug("Hotkey listener restarted with new hotkey")
+        logger.debug("Dictation hotkey listener restarted")
+
+    def _on_command_hotkey_changed(self, hotkey: dict) -> None:
+        """Handle command hotkey change."""
+        logger.info("Command hotkey changed to: %s", hotkey)
+        self._command_hotkey_manager.stop()
+        self._command_hotkey_manager.set_hotkey(hotkey)
+        self._command_hotkey_manager.start()
+        logger.debug("Command hotkey listener restarted")
 
     def _on_widget_size_changed(self, size_key: str) -> None:
         """Handle widget size change."""
@@ -611,6 +1110,22 @@ class VoiceInputApp(QObject):
         self._processing = False
         self._transcription_thread = None
         self._saved_hwnd = None
+        self._command_capturing = False
+        self._streaming_injected_any = False
+
+        # Stop the VAD poll timer if it was running for either modality
+        self._silence_poll_timer.stop()
+
+        # Tear down any active streamer (worker thread + buffer) so reset
+        # doesn't leave an orphan thread feeding callbacks into a UI that
+        # thinks it's idle.
+        if self._streamer is not None:
+            try:
+                self._recorder.set_chunk_callback(None)
+                self._streamer.stop()
+            except Exception as e:
+                logger.warning("Error stopping streamer during reset: %s", e)
+            self._streamer = None
 
         # Hide callout
         self._callout.clear()
@@ -640,7 +1155,15 @@ class VoiceInputApp(QObject):
 
         # Stop everything
         self._focus_tracker.stop()
+        self._silence_poll_timer.stop()
         self._hotkey_manager.stop()
+        self._command_hotkey_manager.stop()
+        if self._streamer is not None:
+            try:
+                self._streamer.stop()
+            except Exception:
+                pass
+            self._streamer = None
         self._recorder.close_stream()
 
         # Hide UI
@@ -674,10 +1197,20 @@ class VoiceInputApp(QObject):
             logger.debug("Saving widget position")
             self._settings.widget_position = self._widget.save_position()
 
-        # Stop focus tracker and hotkey listener
+        # Stop focus tracker, silence poll, and hotkey listeners
         self._focus_tracker.stop()
-        logger.debug("Stopping hotkey listener")
+        self._silence_poll_timer.stop()
+        logger.debug("Stopping hotkey listeners")
         self._hotkey_manager.stop()
+        self._command_hotkey_manager.stop()
+
+        # Stop any active streamer
+        if self._streamer is not None:
+            try:
+                self._streamer.stop()
+            except Exception:
+                pass
+            self._streamer = None
 
         # Cancel any recording
         logger.debug("Cancelling any active recording")

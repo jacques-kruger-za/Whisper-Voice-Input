@@ -1,11 +1,16 @@
 """Application constants."""
 
 APP_NAME = "Whisper Voice Input"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.1.0"
 APP_AUTHOR = "WhisperVoiceInput"
 
 # Default hotkey (Ctrl+Shift+Space)
 DEFAULT_HOTKEY = {"ctrl": True, "shift": True, "alt": False, "key": "space"}
+# Separate hotkey for command-only capture. Pressing this triggers a short
+# recording where every utterance is interpreted as a command (no wake-word
+# prefix needed). Ctrl+Shift+C chosen as a low-collision combo that doesn't
+# clash with the universal Ctrl+C copy shortcut (Shift makes the difference).
+DEFAULT_COMMAND_HOTKEY = {"ctrl": True, "shift": True, "alt": False, "key": "c"}
 
 # Hotkey debounce (milliseconds) - prevents key bounce and rapid re-fire
 HOTKEY_DEBOUNCE_MS = 500
@@ -88,6 +93,10 @@ STATE_IDLE = "idle"
 STATE_RECORDING = "recording"
 STATE_PROCESSING = "processing"
 STATE_ERROR = "error"
+# Command-mode capture: visually distinct from dictation RECORDING. Repurposes
+# the orange mic identity that was previously only used during PROCESSING in
+# batch mode (PROCESSING is now mostly vestigial once streaming is the default).
+STATE_COMMAND = "command"
 
 # Filler words to remove
 FILLER_WORDS = [
@@ -139,3 +148,81 @@ PUNCTUATION_WORDS = {
 # ("undue" -> "undo"). Wake-word prefix already eliminates ambiguity,
 # so this can be relatively lenient.
 COMMAND_THRESHOLD = 65
+
+# ── Streaming transcription tuning ─────────────────────────────────────────
+# Used by StreamingTranscriber + app.py command-capture flow. Centralised so
+# tuning happens in one place per the project's DRY rule.
+
+# Length of the rolling audio window passed to Whisper each round.
+# Longer = more context (better accuracy on long sentences) but heavier per-round
+# CPU. Streaming needs each round to finish in ~1s wall time; with the 'base'
+# model on a typical CPU, an 8s window keeps round time around 1.0-1.5s. The
+# 'small' model on this same window takes ~4-5s and is unsuitable for streaming.
+STREAM_WINDOW_SECONDS = 8.0
+
+# How often a new transcription round runs. Each round pays the full
+# transcribe-window cost, so this is the lower bound on commit latency.
+STREAM_INTERVAL_SECONDS = 1.0
+
+# Min silence (ms) before VAD fires a segment boundary in streaming mode.
+# Shorter than the batch default (2000) so spoken-punctuation pauses are
+# detected promptly during continuous dictation.
+STREAM_VAD_MIN_SILENCE_MS = 500
+
+# Whisper decoder parameters for BATCH mode — quality-tuned, OK to be slow
+# because batch only runs once per utterance.
+WHISPER_BEAM_SIZE = 5
+WHISPER_BEST_OF = 5
+WHISPER_TEMPERATURE = 0.0
+
+# Whisper decoder parameters for STREAMING mode — speed-tuned. Beam=1 +
+# best_of=1 cuts per-round time roughly in half versus the batch settings.
+# Slight accuracy hit, but K=2 LocalAgreement compensates by only committing
+# words that survive across rounds.
+WHISPER_STREAM_BEAM_SIZE = 1
+WHISPER_STREAM_BEST_OF = 1
+
+# Settle delay before the FIRST streaming injection — gives the OS time to
+# move focus to the saved HWND before pyautogui.hotkey('ctrl', 'v') runs.
+STREAM_FOCUS_SETTLE_MS = 150
+
+# ── VAD-driven session lifecycle ───────────────────────────────────────────
+# Audio level threshold (normalised 0..1 RMS, same scale as the level callback)
+# below which we treat the input as silence. Quiet built-in mics on default
+# audio paths can produce normal speech in the 0.02..0.10 range, which is
+# why this is set conservatively low. Picking a real headset or external mic
+# in Settings → Audio gives much louder input and makes this threshold
+# comfortable. The bar-strip cutoff is 0.02, so anything visible on the bars
+# should now reliably register as "not silence" for VAD lifecycle decisions.
+SILENCE_THRESHOLD = 0.015
+
+# Streaming: how long of silence AFTER speech before we run the final
+# transcribe pass and inject the clean text into the user's editor. This
+# is the primary commit trigger in the preview-and-finalize architecture.
+# 1.0s feels natural for sentence boundaries — long enough that a comma-pause
+# inside a clause doesn't fire prematurely, short enough to feel responsive.
+STREAM_FINALIZE_AFTER_SPEECH_SECONDS = 1.0
+
+# Streaming: how long of continuous silence before we pause Whisper rounds.
+# Mic stays open, bar strip keeps tracking, but no preview work runs. Resumes
+# automatically on next loud sample. Helps avoid hallucinations on long
+# silences (Whisper sometimes invents '[Music]' or repeats the last word).
+STREAM_AUTO_PAUSE_SECONDS = 2.0
+
+# Streaming: how long of continuous silence (counts pause time) before the
+# session auto-deactivates and returns to idle. Prevents a forgotten session
+# from running indefinitely if the user walks away.
+STREAM_AUTO_STOP_SECONDS = 60.0
+
+# Command capture: how long of silence AFTER speech was detected before we
+# treat the utterance as complete and fire. Keeps the modality single-press —
+# user says "save", silence triggers fire, no second hotkey needed.
+COMMAND_AUTO_STOP_AFTER_SPEECH_SECONDS = 1.5
+
+# Command capture: bail out if no speech is ever detected within this window.
+# Covers the "accidentally pressed the hotkey" case.
+COMMAND_NO_SPEECH_TIMEOUT_SECONDS = 8.0
+
+# How often the silence-monitor poll timer ticks (ms). Smaller = snappier
+# transitions but more wakeups; 200ms is imperceptible at human-speech timescales.
+SILENCE_POLL_INTERVAL_MS = 200

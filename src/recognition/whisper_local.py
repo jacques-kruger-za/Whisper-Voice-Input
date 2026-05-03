@@ -99,12 +99,13 @@ class LocalWhisperRecognizer(BaseRecognizer):
             logger.debug("Calling Whisper transcribe with language=%s", lang)
 
             # Transcribe
+            from ..config.constants import WHISPER_BEAM_SIZE, WHISPER_BEST_OF, WHISPER_TEMPERATURE
             segments, info = self._model.transcribe(
                 str(audio_path),
                 language=lang,
-                beam_size=5,
-                best_of=5,
-                temperature=0.0,
+                beam_size=WHISPER_BEAM_SIZE,
+                best_of=WHISPER_BEST_OF,
+                temperature=WHISPER_TEMPERATURE,
                 condition_on_previous_text=True,
                 vad_filter=True,  # Filter out non-speech
                 initial_prompt=prompt,
@@ -135,6 +136,57 @@ class LocalWhisperRecognizer(BaseRecognizer):
         except Exception as e:
             logger.error("Transcription error: %s", e)
             return RecognitionResult(text="", error=str(e))
+
+    def transcribe_array(
+        self,
+        samples,
+        language: str | None = None,
+        initial_prompt: str | None = None,
+        vad_min_silence_ms: int = 500,
+    ) -> list:
+        """Transcribe a raw audio buffer (16 kHz mono float32 ndarray).
+
+        Returns a list of segment objects (faster-whisper Segment) directly,
+        without aggregation. Designed for streaming use where the caller needs
+        per-segment timing (start, end) and text. Empty list on failure or
+        when VAD strips everything.
+
+        Args:
+            samples: 1-D numpy float32 array, 16 kHz mono, range -1..1.
+            language: Whisper language code (e.g. "en"); None = auto-detect.
+            initial_prompt: Vocabulary bias hint (truncated to 224 chars).
+            vad_min_silence_ms: Shorter than batch default (2000) so segment
+                boundaries fire on natural pauses for streaming UX.
+        """
+        if not self._load_model():
+            return []
+        try:
+            lang = None
+            if language and language != "auto":
+                lang = language.split("-")[0] if "-" in language else language
+
+            prompt = initial_prompt[:224] if initial_prompt else None
+
+            from ..config.constants import (
+                WHISPER_STREAM_BEAM_SIZE, WHISPER_STREAM_BEST_OF, WHISPER_TEMPERATURE,
+            )
+            segments, _info = self._model.transcribe(
+                samples,
+                language=lang,
+                beam_size=WHISPER_STREAM_BEAM_SIZE,
+                best_of=WHISPER_STREAM_BEST_OF,
+                temperature=WHISPER_TEMPERATURE,
+                condition_on_previous_text=False,  # streaming: each window stands alone
+                vad_filter=True,
+                vad_parameters={
+                    "min_silence_duration_ms": vad_min_silence_ms,
+                },
+                initial_prompt=prompt,
+            )
+            return list(segments)
+        except Exception as e:
+            logger.error("transcribe_array error: %s", e)
+            return []
 
     def is_available(self) -> bool:
         """Check if Faster-Whisper is available."""

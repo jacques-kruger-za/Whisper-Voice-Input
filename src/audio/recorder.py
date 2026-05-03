@@ -25,6 +25,10 @@ class AudioRecorder:
         self._stream: sd.InputStream | None = None
         self._lock = threading.Lock()
         self._level_callback: Callable[[float], None] | None = None
+        # Chunk callback fires for every audio block (sounddevice thread).
+        # Used by streaming mode to feed the rolling buffer in real time.
+        # Must be cheap — no synchronous transcription work in the callback.
+        self._chunk_callback: Callable[[np.ndarray], None] | None = None
 
     def set_device(self, device: str | None) -> None:
         """Set the audio input device."""
@@ -34,6 +38,14 @@ class AudioRecorder:
     def set_level_callback(self, callback: Callable[[float], None]) -> None:
         """Set callback for audio level updates (0.0 to 1.0)."""
         self._level_callback = callback
+
+    def set_chunk_callback(self, callback: Callable[[np.ndarray], None] | None) -> None:
+        """Set callback for raw audio chunks (float32, 16 kHz, mono).
+
+        Pass ``None`` to disable. Called from the sounddevice audio thread
+        on every block; keep work cheap and offload heavy processing.
+        """
+        self._chunk_callback = callback
 
     @staticmethod
     def get_devices() -> list[dict[str, Any]]:
@@ -61,15 +73,25 @@ class AudioRecorder:
             logger.warning("Audio stream status: %s", status)
 
         with self._lock:
-            if self._recording:
-                self._audio_data.append(indata.copy())
+            if not self._recording:
+                return
+            chunk = indata.copy()
+            self._audio_data.append(chunk)
 
-                # Calculate audio level for visualization
-                if self._level_callback:
-                    level = np.abs(indata).mean()
-                    # Normalize to 0-1 range (assuming 16-bit audio range)
-                    normalized = min(1.0, level * 10)
-                    self._level_callback(normalized)
+            # Calculate audio level for visualization
+            if self._level_callback:
+                level = np.abs(indata).mean()
+                # Normalize to 0-1 range (assuming 16-bit audio range)
+                normalized = min(1.0, level * 10)
+                self._level_callback(normalized)
+
+        # Fire chunk callback OUTSIDE the lock so it never blocks the audio
+        # thread on a slow consumer (the streamer's feed() takes its own lock).
+        if self._chunk_callback:
+            try:
+                self._chunk_callback(chunk)
+            except Exception as e:
+                logger.debug("chunk_callback error (non-fatal): %s", e)
 
     def start(self) -> None:
         """Start recording audio."""
@@ -103,14 +125,39 @@ class AudioRecorder:
             if device_id is None:
                 logger.warning("Requested device '%s' not found, using default", self._device)
 
-        self._stream = sd.InputStream(
-            device=device_id,
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype=np.float32,
-            callback=self._audio_callback,
-        )
-        self._stream.start()
+        # Try the requested device; if PortAudio rejects it (disconnected,
+        # renamed, driver gone), fall back to the system default rather
+        # than failing the whole recording session.
+        try:
+            self._stream = sd.InputStream(
+                device=device_id,
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype=np.float32,
+                callback=self._audio_callback,
+            )
+            self._stream.start()
+        except sd.PortAudioError as e:
+            if device_id is None:
+                # Already on default — no fallback possible. Reset state and re-raise.
+                with self._lock:
+                    self._recording = False
+                    self._audio_data = []
+                self._stream = None
+                raise
+            logger.warning(
+                "Configured device '%s' (id=%d) failed (%s); falling back to system default",
+                self._device, device_id, e,
+            )
+            device_id = None
+            self._stream = sd.InputStream(
+                device=None,
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype=np.float32,
+                callback=self._audio_callback,
+            )
+            self._stream.start()
         logger.info("Audio recording started (device=%s, rate=%d, channels=%d)",
                     device_id or "default", SAMPLE_RATE, CHANNELS)
 

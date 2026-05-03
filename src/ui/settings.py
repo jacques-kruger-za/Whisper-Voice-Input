@@ -41,6 +41,7 @@ class SettingsWindow(QDialog):
     # Signals
     settings_changed = pyqtSignal()
     hotkey_changed = pyqtSignal(dict)
+    command_hotkey_changed = pyqtSignal(dict)
     widget_size_changed = pyqtSignal(str)
 
     def __init__(self, parent=None):
@@ -89,23 +90,38 @@ class SettingsWindow(QDialog):
         main_layout.addLayout(button_layout)
 
     def _create_hotkey_section(self) -> QGroupBox:
-        """Create hotkey configuration section."""
-        group = QGroupBox("Hotkey")
+        """Create hotkey configuration section (dictation + command)."""
+        group = QGroupBox("Hotkeys")
         layout = QFormLayout(group)
 
-        # Current hotkey display
-        hotkey_layout = QHBoxLayout()
+        # Dictation hotkey
+        dict_layout = QHBoxLayout()
         self._hotkey_display = QLineEdit()
         self._hotkey_display.setReadOnly(True)
         self._hotkey_display.setPlaceholderText("Press 'Set' to configure")
-        hotkey_layout.addWidget(self._hotkey_display)
+        dict_layout.addWidget(self._hotkey_display)
 
         self._hotkey_btn = QPushButton("Set")
         self._hotkey_btn.setFixedWidth(60)
         self._hotkey_btn.clicked.connect(self._capture_hotkey)
-        hotkey_layout.addWidget(self._hotkey_btn)
+        dict_layout.addWidget(self._hotkey_btn)
 
-        layout.addRow("Toggle Recording:", hotkey_layout)
+        layout.addRow("Toggle Dictation:", dict_layout)
+
+        # Command-only hotkey (separate keystroke modality — say a command
+        # without the wake-word prefix; the hotkey itself signals intent)
+        cmd_layout = QHBoxLayout()
+        self._command_hotkey_display = QLineEdit()
+        self._command_hotkey_display.setReadOnly(True)
+        self._command_hotkey_display.setPlaceholderText("Press 'Set' to configure")
+        cmd_layout.addWidget(self._command_hotkey_display)
+
+        self._command_hotkey_btn = QPushButton("Set")
+        self._command_hotkey_btn.setFixedWidth(60)
+        self._command_hotkey_btn.clicked.connect(self._capture_command_hotkey)
+        cmd_layout.addWidget(self._command_hotkey_btn)
+
+        layout.addRow("Toggle Command:", cmd_layout)
 
         return group
 
@@ -177,6 +193,29 @@ class SettingsWindow(QDialog):
         self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._api_key_edit.setPlaceholderText("sk-...")
         layout.addRow("OpenAI API Key:", self._api_key_edit)
+
+        # Streaming mode (experimental) — continuous transcription with
+        # mid-utterance text injection vs the default record-then-transcribe.
+        self._streaming_check = QCheckBox(
+            "Streaming mode (experimental — text appears as you speak)"
+        )
+        layout.addRow("", self._streaming_check)
+
+        # Streaming uses its OWN (smaller, faster) model so per-round time
+        # stays near 1s on CPU. The batch 'Model' above is unaffected.
+        self._streaming_model_combo = QComboBox()
+        for model in WHISPER_MODELS:
+            label = model
+            if model == "tiny":
+                label += " (fastest, lowest accuracy)"
+            elif model == "base":
+                label += " (recommended for streaming)"
+            elif model == "small":
+                label += " (slow on CPU)"
+            elif model in ("medium", "large-v3"):
+                label += " (too slow for CPU streaming)"
+            self._streaming_model_combo.addItem(label, model)
+        layout.addRow("Streaming Model:", self._streaming_model_combo)
 
         return group
 
@@ -384,10 +423,18 @@ class SettingsWindow(QDialog):
 
     def _load_settings(self) -> None:
         """Load current settings into UI."""
-        # Hotkey
+        # Hotkey (dictation)
         hotkey = self._settings.hotkey
         self._hotkey_display.setText(hotkey_to_string(hotkey))
         self._current_hotkey = hotkey.copy()
+
+        # Hotkey (command)
+        cmd_hotkey = getattr(self._settings, 'command_hotkey', None)
+        if cmd_hotkey:
+            self._command_hotkey_display.setText(hotkey_to_string(cmd_hotkey))
+            self._current_command_hotkey = dict(cmd_hotkey)
+        else:
+            self._current_command_hotkey = {}
 
         # Audio device
         device = self._settings.audio_device
@@ -408,6 +455,13 @@ class SettingsWindow(QDialog):
         for i in range(self._model_combo.count()):
             if self._model_combo.itemData(i) == model:
                 self._model_combo.setCurrentIndex(i)
+                break
+
+        # Streaming model (separate from batch model)
+        streaming_model = getattr(self._settings, 'streaming_model', 'base')
+        for i in range(self._streaming_model_combo.count()):
+            if self._streaming_model_combo.itemData(i) == streaming_model:
+                self._streaming_model_combo.setCurrentIndex(i)
                 break
 
         # Language
@@ -444,6 +498,10 @@ class SettingsWindow(QDialog):
         # Commands active
         commands_enabled = getattr(self._settings, 'commands_enabled', True)
         self._commands_enabled_check.setChecked(bool(commands_enabled))
+
+        # Streaming mode (experimental)
+        streaming = getattr(self._settings, 'streaming_mode', False)
+        self._streaming_check.setChecked(bool(streaming))
 
         # Custom punctuation + commands (working copies — modified by buttons,
         # persisted on Save)
@@ -605,7 +663,7 @@ class SettingsWindow(QDialog):
                     self._refresh_commands_list()
 
     def _capture_hotkey(self) -> None:
-        """Start capturing a new hotkey."""
+        """Start capturing a new dictation hotkey."""
         self._hotkey_btn.setText("...")
         self._hotkey_btn.setEnabled(False)
         self._hotkey_display.setText("Press your hotkey...")
@@ -614,11 +672,27 @@ class SettingsWindow(QDialog):
         self._hotkey_capture.capture(self._on_hotkey_captured)
 
     def _on_hotkey_captured(self, hotkey: dict) -> None:
-        """Handle captured hotkey."""
+        """Handle captured dictation hotkey."""
         self._current_hotkey = hotkey
         self._hotkey_display.setText(hotkey_to_string(hotkey))
         self._hotkey_btn.setText("Set")
         self._hotkey_btn.setEnabled(True)
+
+    def _capture_command_hotkey(self) -> None:
+        """Start capturing a new command hotkey."""
+        self._command_hotkey_btn.setText("...")
+        self._command_hotkey_btn.setEnabled(False)
+        self._command_hotkey_display.setText("Press your hotkey...")
+
+        self._command_hotkey_capture = HotkeyCapture()
+        self._command_hotkey_capture.capture(self._on_command_hotkey_captured)
+
+    def _on_command_hotkey_captured(self, hotkey: dict) -> None:
+        """Handle captured command hotkey."""
+        self._current_command_hotkey = hotkey
+        self._command_hotkey_display.setText(hotkey_to_string(hotkey))
+        self._command_hotkey_btn.setText("Set")
+        self._command_hotkey_btn.setEnabled(True)
 
     def _save_settings(self) -> None:
         """Save settings and close."""
@@ -626,12 +700,18 @@ class SettingsWindow(QDialog):
         old_hotkey = self._settings.hotkey
         self._settings.hotkey = self._current_hotkey
 
+        old_command_hotkey = getattr(self._settings, 'command_hotkey', {})
+        if hasattr(self._settings, 'command_hotkey') and self._current_command_hotkey:
+            self._settings.command_hotkey = self._current_command_hotkey
+
         # Audio
         self._settings.audio_device = self._device_combo.currentData()
 
         # Recognition
         self._settings.engine = self._engine_combo.currentData()
         self._settings.model = self._model_combo.currentData()
+        if hasattr(self._settings, 'streaming_model'):
+            self._settings.streaming_model = self._streaming_model_combo.currentData()
         self._settings.language = self._language_combo.currentData()
         self._settings.openai_api_key = self._api_key_edit.text()
 
@@ -658,6 +738,10 @@ class SettingsWindow(QDialog):
         if hasattr(self._settings, 'commands_enabled'):
             self._settings.commands_enabled = self._commands_enabled_check.isChecked()
 
+        # Streaming mode (experimental)
+        if hasattr(self._settings, 'streaming_mode'):
+            self._settings.streaming_mode = self._streaming_check.isChecked()
+
         # Custom punctuation + commands
         if hasattr(self._settings, 'custom_punctuation'):
             self._settings.custom_punctuation = self._punct_customs
@@ -671,6 +755,8 @@ class SettingsWindow(QDialog):
         self.settings_changed.emit()
         if self._current_hotkey != old_hotkey:
             self.hotkey_changed.emit(self._current_hotkey)
+        if self._current_command_hotkey and self._current_command_hotkey != old_command_hotkey:
+            self.command_hotkey_changed.emit(self._current_command_hotkey)
         if new_widget_size != old_widget_size:
             self.widget_size_changed.emit(new_widget_size)
 
