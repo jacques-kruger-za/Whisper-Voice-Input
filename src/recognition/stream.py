@@ -421,9 +421,17 @@ class StreamingTranscriber:
                 for s in raw_segments
                 if (s.text or "").strip()
             ]
+            # Compose a short preview of the round's text for INFO logging.
+            # Critical for diagnosing why K=2 fails to agree across rounds —
+            # without seeing the actual round outputs, we can only guess.
+            round_text_preview = " ".join(s.text.strip() for s in segments).strip()
+            preview = round_text_preview[:120]
+            if len(round_text_preview) > 120:
+                preview = preview + "..."
             logger.info(
-                "Streaming round %d: %d segments in %.2fs (window=%.1fs)",
-                self._round, len(segments), elapsed, window.size / self._sample_rate,
+                "Streaming round %d: %d segs in %.2fs (window=%.1fs) text=%r",
+                self._round, len(segments), elapsed,
+                window.size / self._sample_rate, preview,
             )
 
             # If stop was requested while we were transcribing, swallow this
@@ -449,6 +457,13 @@ class StreamingTranscriber:
                         self._on_committed(newly_committed)
                     except Exception as e:
                         logger.exception("on_committed raised: %s", e)
+            elif round_words:
+                # Round had words but nothing committed — show why so the
+                # log alone tells the agreement story.
+                logger.info(
+                    "No commit (round_words=%d, tentative=%d)",
+                    len(round_words), len(tentative.split()) if tentative else 0,
+                )
             if self._on_tentative:
                 try:
                     self._on_tentative(tentative)
