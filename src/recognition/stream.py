@@ -266,13 +266,13 @@ class StreamingTranscriber:
         """
         if not self._paused:
             self._paused = True
-            logger.debug("Streaming paused (silence)")
+            logger.info("Streaming paused (silence detected)")
 
     def resume(self) -> None:
         """Resume transcription rounds after pause()."""
         if self._paused:
             self._paused = False
-            logger.debug("Streaming resumed")
+            logger.info("Streaming resumed (speech detected)")
 
     @property
     def is_paused(self) -> bool:
@@ -334,6 +334,10 @@ class StreamingTranscriber:
 
             window = self._snapshot_window()
             if window is None:
+                # Still warming up the buffer (< _MIN_BUFFER_SECONDS).
+                # Visible at INFO so a streaming session that produces no
+                # output is diagnosable without DEBUG logs.
+                logger.info("Streaming round skipped: buffer too short")
                 continue
 
             t0 = time.perf_counter()
@@ -359,8 +363,8 @@ class StreamingTranscriber:
                 for s in raw_segments
                 if (s.text or "").strip()
             ]
-            logger.debug(
-                "Streaming round %d: %d segments in %.2fs (window=%.2fs)",
+            logger.info(
+                "Streaming round %d: %d segments in %.2fs (window=%.1fs)",
                 self._round, len(segments), elapsed, window.size / self._sample_rate,
             )
 

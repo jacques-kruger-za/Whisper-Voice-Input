@@ -179,9 +179,13 @@ STREAM_FOCUS_SETTLE_MS = 150
 
 # ── VAD-driven session lifecycle ───────────────────────────────────────────
 # Audio level threshold (normalised 0..1 RMS, same scale as the level callback)
-# below which we treat the input as silence. Speech typically registers at
-# 0.05..0.30, room noise at <0.02; 0.03 is a comfortable boundary.
-SILENCE_THRESHOLD = 0.03
+# below which we treat the input as silence. Quiet built-in mics on default
+# audio paths can produce normal speech in the 0.02..0.10 range, which is
+# why this is set conservatively low. Picking a real headset or external mic
+# in Settings → Audio gives much louder input and makes this threshold
+# comfortable. The bar-strip cutoff is 0.02, so anything visible on the bars
+# should now reliably register as "not silence" for VAD lifecycle decisions.
+SILENCE_THRESHOLD = 0.015
 
 # Streaming: how long of continuous silence before we pause Whisper rounds.
 # Mic stays open, bar strip keeps tracking, but no transcription work runs.
