@@ -61,18 +61,13 @@ class StreamSegment:
 _WORD_NORM_RE = re.compile(r"[^\w']+", re.UNICODE)
 
 # Minimum words before a commit is allowed to land into the user's text,
-# unless (a) the agreed prefix ends in terminal punctuation, or (b) the
-# whole new-content has agreed (no tentative remainder, so the short
-# fragment is definitely the user's complete utterance, not a transient
-# prefix of something longer). Without this gate, K=2 fires on single-word
-# prefix agreements ("I", "And", "Missing") that read as dribble between
-# bigger commits.
-# Bumped from 2 to 3: 2-word fragments like "as we" still slipped through
-# the lower threshold and read as dribble between bigger sentences.
-# 3 covers most natural transition phrases while letting genuine 3+ word
-# clauses commit promptly. Single/two-word complete utterances still get
-# through via the tentative-empty override below.
+# unless (a) the agreed prefix ends in terminal punctuation, (b) the whole
+# new-content has agreed (no tentative remainder), or (c) we've been stuck
+# without a commit for RELAX_AFTER_SECONDS — the bar drops to 1 to avoid
+# losing text when Whisper output keeps shifting and full agreement
+# never reaches the higher threshold.
 MIN_COMMIT_WORDS = 3
+RELAX_AFTER_SECONDS = 4.0  # if no commit for this long, accept short agreements
 _TERMINAL_PUNCTUATION = (".", "!", "?")
 
 
@@ -113,6 +108,11 @@ class CommitTracker:
         # committed prefix grows between rounds, so we have to recompute
         # each round's post-commit slice against the LATEST committed state.
         self._prev_round_words: list[str] = []
+        # Time of the last successful commit. Used to relax the
+        # MIN_COMMIT_WORDS gate when streaming has gone too long without
+        # output, so we don't lose text just because Whisper output keeps
+        # shifting and never fully agrees on 3+ words.
+        self._last_commit_ts: float = time.monotonic()
 
     @property
     def committed_text(self) -> str:
@@ -121,6 +121,7 @@ class CommitTracker:
     def reset(self) -> None:
         self._committed_words.clear()
         self._prev_round_words.clear()
+        self._last_commit_ts = time.monotonic()
 
     def update(self, round_words: list[str]) -> tuple[str, str]:
         """Feed one round's words; return (newly_committed, tentative)."""
@@ -138,13 +139,26 @@ class CommitTracker:
         # LocalAgreement: words that agreed across two consecutive rounds
         common = self._common_prefix(new_content, prev_new_content)
 
-        # Hold back fragments shorter than MIN_COMMIT_WORDS that don't end
-        # at a sentence boundary AND have more tentative content following.
-        # The tentative-non-empty check is the key: if everything has
-        # agreed (tentative is empty), the short fragment IS the user's
-        # complete utterance — commit it. Otherwise it's a transient
-        # prefix of something still being decoded — wait for more.
-        if 0 < len(common) < MIN_COMMIT_WORDS and len(common) < len(new_content):
+        # Effective commit threshold relaxes if we've been stuck — i.e.
+        # nothing has committed for RELAX_AFTER_SECONDS. This prevents
+        # text from being lost when Whisper output keeps shifting and the
+        # 3-word-prefix agreement never lands. Normal flow uses the full
+        # gate; only after a stall do single-word agreements squeeze through.
+        seconds_since_commit = time.monotonic() - self._last_commit_ts
+        threshold = 1 if seconds_since_commit > RELAX_AFTER_SECONDS else MIN_COMMIT_WORDS
+        if seconds_since_commit > RELAX_AFTER_SECONDS and common:
+            logger.info(
+                "Commit threshold relaxed (stuck %.1fs, common=%d words)",
+                seconds_since_commit, len(common),
+            )
+
+        # Hold back fragments shorter than threshold that don't end at a
+        # sentence boundary AND have more tentative content following.
+        # The tentative-non-empty check is key: if everything has agreed
+        # (tentative is empty), the short fragment IS the user's complete
+        # utterance — commit it. Otherwise it's a transient prefix of
+        # something still being decoded — wait for more.
+        if 0 < len(common) < threshold and len(common) < len(new_content):
             last = common[-1].rstrip()
             if not last.endswith(_TERMINAL_PUNCTUATION):
                 common = []
@@ -153,6 +167,7 @@ class CommitTracker:
         newly_committed_words = new_content[: len(common)]
         if newly_committed_words:
             self._committed_words.extend(newly_committed_words)
+            self._last_commit_ts = time.monotonic()
 
         tentative_words = new_content[len(common):]
 
