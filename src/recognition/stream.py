@@ -1,38 +1,40 @@
-"""Sliding-window streaming transcription substrate (S1).
+"""Streaming transcription substrate — preview + utterance-finalize architecture.
 
-Owns a rolling audio buffer and a worker thread that transcribes the most
-recent ``window_seconds`` of audio every ``interval_seconds``. Emits raw
-faster-whisper Segment objects via a callback — no commit/hold-back logic
-yet (that's S2). The caller decides what to do with the (potentially
-flickering) per-round segments.
+Two distinct outputs:
+
+1. ``on_preview(text)`` fires every round with the LATEST rolling-window
+   transcription. Best-effort, may flicker, may jump as Whisper revises.
+   Drives a transient UI surface so the user sees something is happening.
+   Raw model output, no cleanup applied.
+
+2. ``finalize()`` is called by the app on end-of-utterance (VAD-detected
+   silence after speech). Runs a fresh full-quality transcribe on the
+   audio captured since the last finalize — full context, full beam
+   search if the recogniser supports it. Returns the final text. THIS is
+   what gets injected into the user's editor.
+
+The preview pipeline is fast and may be wrong; the finalize pipeline is
+slow but accurate. The split means we don't compromise reliability of
+the committed text just to get live feedback during streaming.
 
 Threading model:
-- ``feed(chunk)`` is called from the audio recorder thread; it appends to
-  a deque under a lock and returns immediately.
-- A single worker thread sleeps for ``interval_seconds``, snapshots the
-  last ``window_seconds`` of buffered audio under the lock, runs
-  ``recognizer.transcribe_array()``, and dispatches segments to
-  ``on_segments``.
-- ``stop()`` signals the worker via Event, joins, and clears the buffer.
-
-Design notes:
-- The buffer holds raw float32 samples (16 kHz mono). We keep slightly
-  more than ``window_seconds`` worth and slice off the tail for each
-  round — this is simpler than a fixed-size ring and avoids reallocation.
-- VAD fires per-call inside transcribe_array with a 500ms min-silence so
-  segment boundaries arrive promptly during natural pauses.
-- The callback runs on the worker thread; consumers must be thread-safe
-  (e.g. emit a Qt signal to the UI thread).
+- ``feed(chunk)`` runs on the audio thread (recorder callback). Cheap.
+- A worker thread runs ``recognizer.transcribe_array`` on the rolling
+  window every ``interval_seconds`` and dispatches preview text via
+  ``on_preview``. Callbacks run on the worker thread; consumers must
+  marshal to the UI thread (e.g. via a Qt signal).
+- ``finalize()`` is called synchronously by the app on the UI thread.
+  It pauses the worker briefly so the audio buffer doesn't shift under
+  the final transcribe call.
 """
 
 from __future__ import annotations
 
-import re
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Callable, Iterable, Protocol
+from typing import Callable, Protocol
 
 import numpy as np
 
@@ -54,155 +56,6 @@ class StreamSegment:
     end: float
 
 
-# Strip leading/trailing punctuation for word equality during agreement.
-# Whisper's output varies (",", ".", capitalisation) across rounds even on
-# identical audio — normalising lets us compare at the lexical level while
-# still emitting the model's chosen punctuation in the committed text.
-_WORD_NORM_RE = re.compile(r"[^\w']+", re.UNICODE)
-
-# Minimum words before a commit is allowed to land into the user's text,
-# unless (a) the agreed prefix ends in terminal punctuation, (b) the whole
-# new-content has agreed (no tentative remainder), or (c) we've been stuck
-# without a commit for RELAX_AFTER_SECONDS — the bar drops to 1 to avoid
-# losing text when Whisper output keeps shifting and full agreement
-# never reaches the higher threshold.
-MIN_COMMIT_WORDS = 3
-RELAX_AFTER_SECONDS = 4.0  # if no commit for this long, accept short agreements
-_TERMINAL_PUNCTUATION = (".", "!", "?")
-
-
-def _normalise_word(w: str) -> str:
-    return _WORD_NORM_RE.sub("", w).lower()
-
-
-class CommitTracker:
-    """LocalAgreement-K commit logic over per-round word sequences.
-
-    A word is *committed* the first time it appears at the same position
-    (relative to the committed prefix) in K consecutive rounds. Until
-    committed, words are *tentative* — visible to the UI but not injected.
-
-    Algorithm per update():
-      1. Align: find the longest suffix of the committed text that is a
-         prefix of the new round. That overlap is the part of the audio
-         we've already finalised; everything after is "new content".
-      2. Within the new content, compute the longest common prefix with
-         the previous round's new content (case- & punctuation-insensitive).
-      3. That common prefix advances commitment. Anything beyond is tentative.
-
-    K is fixed at 2 for v1 — well-supported in the literature for
-    streaming Whisper and avoids the latency hit of K=3.
-
-    Caveats:
-      - Word-level only; we don't track per-token timestamps. This is
-        sufficient for dictation-length sessions where the rolling
-        window typically still contains the start of the utterance.
-      - When the window slides past previously committed audio, alignment
-        falls through to 0 (no overlap) and we restart agreement from
-        scratch on the new content. Safe but conservative.
-    """
-
-    def __init__(self) -> None:
-        self._committed_words: list[str] = []
-        # Store the full previous round, not just its "new content" — the
-        # committed prefix grows between rounds, so we have to recompute
-        # each round's post-commit slice against the LATEST committed state.
-        self._prev_round_words: list[str] = []
-        # Time of the last successful commit. Used to relax the
-        # MIN_COMMIT_WORDS gate when streaming has gone too long without
-        # output, so we don't lose text just because Whisper output keeps
-        # shifting and never fully agrees on 3+ words.
-        self._last_commit_ts: float = time.monotonic()
-
-    @property
-    def committed_text(self) -> str:
-        return " ".join(self._committed_words)
-
-    def reset(self) -> None:
-        self._committed_words.clear()
-        self._prev_round_words.clear()
-        self._last_commit_ts = time.monotonic()
-
-    def update(self, round_words: list[str]) -> tuple[str, str]:
-        """Feed one round's words; return (newly_committed, tentative)."""
-        if not round_words:
-            self._prev_round_words = []
-            return ("", "")
-
-        # New content for THIS round: trim the committed-prefix overlap
-        new_content = round_words[self._align(round_words):]
-
-        # New content for the PREVIOUS round, computed against the SAME
-        # committed state so the two slices are directly comparable.
-        prev_new_content = self._prev_round_words[self._align(self._prev_round_words):]
-
-        # LocalAgreement: words that agreed across two consecutive rounds
-        common = self._common_prefix(new_content, prev_new_content)
-
-        # Effective commit threshold relaxes if we've been stuck — i.e.
-        # nothing has committed for RELAX_AFTER_SECONDS. This prevents
-        # text from being lost when Whisper output keeps shifting and the
-        # 3-word-prefix agreement never lands. Normal flow uses the full
-        # gate; only after a stall do single-word agreements squeeze through.
-        seconds_since_commit = time.monotonic() - self._last_commit_ts
-        threshold = 1 if seconds_since_commit > RELAX_AFTER_SECONDS else MIN_COMMIT_WORDS
-        if seconds_since_commit > RELAX_AFTER_SECONDS and common:
-            logger.info(
-                "Commit threshold relaxed (stuck %.1fs, common=%d words)",
-                seconds_since_commit, len(common),
-            )
-
-        # Hold back fragments shorter than threshold that don't end at a
-        # sentence boundary AND have more tentative content following.
-        # The tentative-non-empty check is key: if everything has agreed
-        # (tentative is empty), the short fragment IS the user's complete
-        # utterance — commit it. Otherwise it's a transient prefix of
-        # something still being decoded — wait for more.
-        if 0 < len(common) < threshold and len(common) < len(new_content):
-            last = common[-1].rstrip()
-            if not last.endswith(_TERMINAL_PUNCTUATION):
-                common = []
-
-        # Commit using the CURRENT round's casing/punctuation
-        newly_committed_words = new_content[: len(common)]
-        if newly_committed_words:
-            self._committed_words.extend(newly_committed_words)
-            self._last_commit_ts = time.monotonic()
-
-        tentative_words = new_content[len(common):]
-
-        # Stash full round for next call
-        self._prev_round_words = round_words
-
-        return (" ".join(newly_committed_words), " ".join(tentative_words))
-
-    def _align(self, round_words: list[str]) -> int:
-        """Index in round_words where 'new content' begins.
-
-        Returns the size of the matched committed-tail / round-head.
-        """
-        if not self._committed_words:
-            return 0
-        committed_norm = [_normalise_word(w) for w in self._committed_words]
-        round_norm = [_normalise_word(w) for w in round_words]
-        max_k = min(len(committed_norm), len(round_norm))
-        for k in range(max_k, 0, -1):
-            if round_norm[:k] == committed_norm[-k:]:
-                return k
-        return 0
-
-    @staticmethod
-    def _common_prefix(a: list[str], b: list[str]) -> list[str]:
-        """Longest common prefix using normalised comparison."""
-        out: list[str] = []
-        for x, y in zip(a, b):
-            if _normalise_word(x) == _normalise_word(y) and _normalise_word(x):
-                out.append(x)
-            else:
-                break
-        return out
-
-
 class _RecognizerProtocol(Protocol):
     def transcribe_array(
         self,
@@ -214,21 +67,29 @@ class _RecognizerProtocol(Protocol):
 
 
 class StreamingTranscriber:
-    """Rolling-window transcription driver."""
+    """Rolling-window preview transcriber + on-demand utterance finalizer."""
+
+    # Minimum buffered audio before we attempt the FIRST round (avoids
+    # hallucinations on tiny clips).
+    _MIN_BUFFER_SECONDS = 1.5
+
+    # Hard cap on the per-utterance audio buffer (the audio kept since the
+    # last finalize). Long enough for a paragraph of dictation; if exceeded
+    # we drop oldest samples — better than runaway memory if a user dictates
+    # for 10 minutes without a single VAD-detected pause.
+    _MAX_UTTERANCE_SECONDS = 90.0
 
     def __init__(
         self,
         recognizer: _RecognizerProtocol,
         *,
         sample_rate: int = 16000,
-        window_seconds: float = 12.0,
+        window_seconds: float = 8.0,
         interval_seconds: float = 1.0,
         language: str | None = None,
         initial_prompt: str | None = None,
         vad_min_silence_ms: int = 500,
-        on_segments: Callable[[list[StreamSegment]], None] | None = None,
-        on_committed: Callable[[str], None] | None = None,
-        on_tentative: Callable[[str], None] | None = None,
+        on_preview: Callable[[str], None] | None = None,
     ) -> None:
         self._recognizer = recognizer
         self._sample_rate = sample_rate
@@ -237,39 +98,43 @@ class StreamingTranscriber:
         self._language = language
         self._initial_prompt = initial_prompt
         self._vad_min_silence_ms = vad_min_silence_ms
-        self._on_segments = on_segments
-        self._on_committed = on_committed  # called with newly-committed text per round
-        self._on_tentative = on_tentative  # called with current tentative tail per round
+        self._on_preview = on_preview
 
-        # Buffer of float32 chunks; protected by lock.
+        # Rolling window buffer (used for preview rounds — bounded).
         self._chunks: deque[np.ndarray] = deque()
-        self._buffer_samples = 0  # cached total length, kept in sync with deque
-        self._max_samples = int(self._sample_rate * self._window_seconds * 1.5)
-        self._lock = threading.Lock()
+        self._buffer_samples = 0
+        self._max_window_samples = int(self._sample_rate * self._window_seconds * 1.5)
 
-        # Commit tracker (LocalAgreement-K word-prefix)
-        self._commit_tracker = CommitTracker()
+        # Utterance buffer: ALL audio captured since the last finalize.
+        # Used at finalize-time for a fresh full-context transcription so
+        # the committed text is independent of any rolling-window shifts.
+        self._utterance_chunks: list[np.ndarray] = []
+        self._utterance_samples = 0
+        self._max_utterance_samples = int(self._sample_rate * self._MAX_UTTERANCE_SECONDS)
+
+        self._lock = threading.Lock()
 
         # Worker control
         self._worker: threading.Thread | None = None
         self._stop_event = threading.Event()
-        # Pause flag: when True, the worker still wakes on its interval but
-        # skips the transcribe call. Audio keeps flowing into the buffer
-        # (so pause→resume doesn't lose context). Driven by app-level VAD.
         self._paused = False
         self._round = 0
 
+    # ── Lifecycle ─────────────────────────────────────────────────────────
+
     def start(self) -> None:
-        """Spawn the worker thread. Idempotent."""
+        """Spawn the preview worker thread. Idempotent."""
         if self._worker and self._worker.is_alive():
             return
         self._stop_event.clear()
         self._round = 0
-        self._commit_tracker.reset()
+        with self._lock:
+            self._chunks.clear()
+            self._buffer_samples = 0
+            self._utterance_chunks = []
+            self._utterance_samples = 0
         self._worker = threading.Thread(
-            target=self._run,
-            name="StreamingTranscriber",
-            daemon=True,
+            target=self._run, name="StreamingTranscriber", daemon=True,
         )
         self._worker.start()
         logger.info(
@@ -278,17 +143,9 @@ class StreamingTranscriber:
         )
 
     def stop(self) -> None:
-        """Signal worker to exit. Returns within ~500ms even if a Whisper
-        round is mid-flight — the daemon worker will exit naturally once
-        its current call returns. Caller MUST also detach any callbacks
-        BEFORE calling stop() if it wants to be sure no late callbacks
-        fire after stop returns.
-        """
+        """Signal worker to exit. Returns within ~500ms."""
         self._stop_event.set()
         if self._worker:
-            # Short timeout so we don't freeze the Qt main thread while a
-            # transcribe round is finishing. Worker is a daemon and will
-            # exit on its own after its current call returns.
             self._worker.join(timeout=0.5)
             if self._worker.is_alive():
                 logger.debug("Worker still mid-round at stop; daemon will exit later")
@@ -296,62 +153,101 @@ class StreamingTranscriber:
         with self._lock:
             self._chunks.clear()
             self._buffer_samples = 0
+            self._utterance_chunks = []
+            self._utterance_samples = 0
         logger.info("Streaming transcriber stopped (rounds_run=%d)", self._round)
 
     def pause(self) -> None:
-        """Skip future transcription rounds until resume() is called.
-
-        Idempotent. The audio buffer continues to fill so resume() picks up
-        with full context. Whisper hallucinations on long silences are
-        avoided because no rounds run during silence.
-        """
+        """Skip future preview rounds until resume(). Audio still buffers."""
         if not self._paused:
             self._paused = True
-            logger.info("Streaming paused (silence detected)")
+            logger.info("Streaming preview paused (silence)")
 
     def resume(self) -> None:
-        """Resume transcription rounds after pause()."""
         if self._paused:
             self._paused = False
-            logger.info("Streaming resumed (speech detected)")
+            logger.info("Streaming preview resumed (speech)")
 
     @property
     def is_paused(self) -> bool:
         return self._paused
 
-    def feed(self, audio_chunk: np.ndarray) -> None:
-        """Append an audio chunk. Thread-safe; called from the recorder thread.
+    # ── Audio ingest ──────────────────────────────────────────────────────
 
-        Chunk must be float32 in -1..1 at the configured sample rate. Mono.
-        Older samples are dropped automatically once the buffer exceeds the
-        soft cap (1.5 × window_seconds).
+    def feed(self, audio_chunk: np.ndarray) -> None:
+        """Append audio. Thread-safe; called from the recorder thread.
+
+        Both the rolling preview buffer AND the utterance buffer get the
+        chunk. The utterance buffer keeps everything since the last
+        finalize (capped at _MAX_UTTERANCE_SECONDS).
         """
         if audio_chunk.ndim != 1:
             audio_chunk = audio_chunk.reshape(-1)
         with self._lock:
             self._chunks.append(audio_chunk)
             self._buffer_samples += audio_chunk.size
-            self._trim_locked()
+            self._trim_window_locked()
+            self._utterance_chunks.append(audio_chunk)
+            self._utterance_samples += audio_chunk.size
+            self._trim_utterance_locked()
 
-    def _trim_locked(self) -> None:
-        """Drop oldest chunks until we're within max_samples. Caller holds lock."""
-        while self._buffer_samples > self._max_samples and self._chunks:
+    def _trim_window_locked(self) -> None:
+        """Drop oldest rolling-window chunks past the cap."""
+        while self._buffer_samples > self._max_window_samples and self._chunks:
             old = self._chunks.popleft()
             self._buffer_samples -= old.size
 
-    # Minimum buffered audio before we even attempt a transcription round.
-    # Whisper hallucinates aggressively on very short clips and the
-    # LocalAgreement K=2 commit can lock in a hallucination if the model
-    # produces the SAME garbage twice. 1.5s gives the audio enough body
-    # that real-speech rounds dominate over hallucinations.
-    _MIN_BUFFER_SECONDS = 1.5
+    def _trim_utterance_locked(self) -> None:
+        """Drop oldest utterance chunks past the cap (90s default)."""
+        while self._utterance_samples > self._max_utterance_samples and self._utterance_chunks:
+            dropped = self._utterance_chunks.pop(0)
+            self._utterance_samples -= dropped.size
+            logger.warning(
+                "Utterance exceeded %ds without finalize; dropping oldest %d samples",
+                int(self._MAX_UTTERANCE_SECONDS), dropped.size,
+            )
+
+    # ── Finalize (called from the UI thread on end-of-utterance) ──────────
+
+    def finalize(self) -> str:
+        """Run a fresh full-context transcribe on all audio since last
+        finalize. Returns clean (uncleaned) text from the recogniser.
+
+        Calls back on the UI thread — synchronous. Internally this clears
+        the utterance buffer so the next round of streaming starts fresh.
+        Preview is NOT cleared automatically; the caller decides when to
+        clear the preview UI.
+        """
+        with self._lock:
+            if not self._utterance_chunks:
+                return ""
+            utterance = np.concatenate(self._utterance_chunks)
+            self._utterance_chunks = []
+            self._utterance_samples = 0
+
+        duration = utterance.size / self._sample_rate
+        logger.info("Finalize: transcribing %.2fs of utterance audio", duration)
+        t0 = time.perf_counter()
+        try:
+            segments = self._recognizer.transcribe_array(
+                utterance,
+                language=self._language,
+                initial_prompt=self._initial_prompt,
+                vad_min_silence_ms=self._vad_min_silence_ms,
+            )
+        except Exception as e:
+            logger.exception("Finalize transcribe failed: %s", e)
+            return ""
+        text = " ".join(getattr(s, "text", "").strip() for s in segments).strip()
+        logger.info(
+            "Finalize complete in %.2fs: %d segments, %d chars",
+            time.perf_counter() - t0, len(segments), len(text),
+        )
+        return text
+
+    # ── Worker loop ───────────────────────────────────────────────────────
 
     def _snapshot_window(self) -> np.ndarray | None:
-        """Concatenate the last window_seconds of audio into a single array.
-
-        Returns None if there isn't enough audio yet (under
-        ``_MIN_BUFFER_SECONDS``) — better latency floor than commit risk.
-        """
         target = int(self._sample_rate * self._window_seconds)
         with self._lock:
             if self._buffer_samples < int(self._sample_rate * self._MIN_BUFFER_SECONDS):
@@ -362,45 +258,33 @@ class StreamingTranscriber:
         return joined
 
     def _run(self) -> None:
-        """Worker loop: schedule rounds at fixed interval boundaries.
+        """Worker loop: emit preview text every interval_seconds.
 
-        Old loop did wait(interval) THEN transcribe — total cycle was
-        (interval + transcribe_time) ~= 1.7s for 1s interval + 0.7s tiny.
-        New loop sleeps until next_round_time so cycles are exactly
-        interval_seconds apart when transcription fits, and just go
-        back-to-back when transcription is slower (graceful degradation,
-        no queue buildup).
+        Schedules at fixed interval boundaries so cycles land at regular
+        cadence even when transcribe time varies. Falls back to back-to-back
+        when behind, snaps forward when far behind.
         """
         next_round_time = time.monotonic() + self._interval_seconds
         while not self._stop_event.is_set():
-            # Sleep until the next scheduled round, but wake immediately if
-            # stop is requested.
             now = time.monotonic()
             sleep_for = max(0.0, next_round_time - now)
             if self._stop_event.wait(timeout=sleep_for):
                 break
             next_round_time += self._interval_seconds
-            # If we've fallen significantly behind, snap forward to "now"
-            # rather than burning through accumulated rounds.
             if next_round_time < time.monotonic():
                 next_round_time = time.monotonic() + self._interval_seconds
 
-            # Skip work entirely while paused — audio still buffers via feed(),
-            # we just don't burn CPU on Whisper or risk silent-period hallucinations.
             if self._paused:
                 continue
 
             window = self._snapshot_window()
             if window is None:
-                # Still warming up the buffer (< _MIN_BUFFER_SECONDS).
-                # Visible at INFO so a streaming session that produces no
-                # output is diagnosable without DEBUG logs.
                 logger.info("Streaming round skipped: buffer too short")
                 continue
 
             t0 = time.perf_counter()
             try:
-                raw_segments = self._recognizer.transcribe_array(
+                segments = self._recognizer.transcribe_array(
                     window,
                     language=self._language,
                     initial_prompt=self._initial_prompt,
@@ -412,60 +296,20 @@ class StreamingTranscriber:
 
             elapsed = time.perf_counter() - t0
             self._round += 1
-            segments = [
-                StreamSegment(
-                    text=s.text.strip(),
-                    start=getattr(s, "start", 0.0) or 0.0,
-                    end=getattr(s, "end", 0.0) or 0.0,
-                )
-                for s in raw_segments
-                if (s.text or "").strip()
-            ]
-            # Compose a short preview of the round's text for INFO logging.
-            # Critical for diagnosing why K=2 fails to agree across rounds —
-            # without seeing the actual round outputs, we can only guess.
-            round_text_preview = " ".join(s.text.strip() for s in segments).strip()
-            preview = round_text_preview[:120]
-            if len(round_text_preview) > 120:
-                preview = preview + "..."
+
+            if self._stop_event.is_set():
+                break
+
+            text = " ".join(getattr(s, "text", "").strip() for s in segments).strip()
+            preview = text[:120] + ("..." if len(text) > 120 else "")
             logger.info(
                 "Streaming round %d: %d segs in %.2fs (window=%.1fs) text=%r",
                 self._round, len(segments), elapsed,
                 window.size / self._sample_rate, preview,
             )
 
-            # If stop was requested while we were transcribing, swallow this
-            # round — late callbacks landing after stop confuse the UI.
-            if self._stop_event.is_set():
-                break
-
-            if segments and self._on_segments:
+            if self._on_preview:
                 try:
-                    self._on_segments(segments)
+                    self._on_preview(text)
                 except Exception as e:
-                    logger.exception("on_segments callback raised: %s", e)
-
-            # LocalAgreement commit pass: turn flickery rounds into stable text.
-            round_text = " ".join(s.text for s in segments).strip()
-            round_words = round_text.split() if round_text else []
-            newly_committed, tentative = self._commit_tracker.update(round_words)
-
-            if newly_committed:
-                logger.info("Committed: %r", newly_committed)
-                if self._on_committed:
-                    try:
-                        self._on_committed(newly_committed)
-                    except Exception as e:
-                        logger.exception("on_committed raised: %s", e)
-            elif round_words:
-                # Round had words but nothing committed — show why so the
-                # log alone tells the agreement story.
-                logger.info(
-                    "No commit (round_words=%d, tentative=%d)",
-                    len(round_words), len(tentative.split()) if tentative else 0,
-                )
-            if self._on_tentative:
-                try:
-                    self._on_tentative(tentative)
-                except Exception as e:
-                    logger.exception("on_tentative raised: %s", e)
+                    logger.exception("on_preview raised: %s", e)

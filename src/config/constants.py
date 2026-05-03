@@ -196,10 +196,17 @@ STREAM_FOCUS_SETTLE_MS = 150
 # should now reliably register as "not silence" for VAD lifecycle decisions.
 SILENCE_THRESHOLD = 0.015
 
+# Streaming: how long of silence AFTER speech before we run the final
+# transcribe pass and inject the clean text into the user's editor. This
+# is the primary commit trigger in the preview-and-finalize architecture.
+# 1.0s feels natural for sentence boundaries — long enough that a comma-pause
+# inside a clause doesn't fire prematurely, short enough to feel responsive.
+STREAM_FINALIZE_AFTER_SPEECH_SECONDS = 1.0
+
 # Streaming: how long of continuous silence before we pause Whisper rounds.
-# Mic stays open, bar strip keeps tracking, but no transcription work runs.
-# Resumes automatically on next loud sample. Helps avoid hallucinations on
-# long silences (Whisper sometimes invents '[Music]' or repeats the last word).
+# Mic stays open, bar strip keeps tracking, but no preview work runs. Resumes
+# automatically on next loud sample. Helps avoid hallucinations on long
+# silences (Whisper sometimes invents '[Music]' or repeats the last word).
 STREAM_AUTO_PAUSE_SECONDS = 2.0
 
 # Streaming: how long of continuous silence (counts pause time) before the

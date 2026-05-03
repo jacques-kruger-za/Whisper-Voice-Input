@@ -17,6 +17,7 @@ from .config.constants import (
     STREAM_VAD_MIN_SILENCE_MS, STREAM_FOCUS_SETTLE_MS,
     STATE_COMMAND,
     STREAM_AUTO_PAUSE_SECONDS, STREAM_AUTO_STOP_SECONDS,
+    STREAM_FINALIZE_AFTER_SPEECH_SECONDS,
     COMMAND_AUTO_STOP_AFTER_SPEECH_SECONDS, COMMAND_NO_SPEECH_TIMEOUT_SECONDS,
     SILENCE_POLL_INTERVAL_MS,
 )
@@ -51,8 +52,7 @@ class VoiceInputApp(QObject):
     command_detected = pyqtSignal(object)  # CommandResult from background thread
     error_occurred = pyqtSignal(str)
     # Streaming-mode signals (worker thread → UI thread)
-    streaming_committed = pyqtSignal(str)
-    streaming_tentative = pyqtSignal(str)
+    streaming_preview = pyqtSignal(str)  # rolling-window preview, may flicker
     _hotkey_signal = pyqtSignal(object)  # HWND from hotkey thread → main thread
     _command_hotkey_signal = pyqtSignal(object)  # HWND from command hotkey thread
 
@@ -98,6 +98,9 @@ class VoiceInputApp(QObject):
 
         # Streaming-mode state (None when not active)
         self._streamer: StreamingTranscriber | None = None
+        # Live preview UI surface — built lazily on first stream start so it
+        # doesn't pay the QWidget cost when the user never enables streaming.
+        self._preview_window = None
         # Whether anything has been injected during the current streaming
         # session — drives leading-space behaviour between committed deltas.
         self._streaming_injected_any = False
@@ -134,8 +137,7 @@ class VoiceInputApp(QObject):
         self.transcription_complete.connect(self._on_transcription_complete)
         self.transcription_segment.connect(self._on_segment)
         self.command_detected.connect(self._on_command_detected)
-        self.streaming_committed.connect(self._on_streaming_committed)
-        self.streaming_tentative.connect(self._on_streaming_tentative)
+        self.streaming_preview.connect(self._on_streaming_preview)
         self.error_occurred.connect(self._on_error)
         self._hotkey_signal.connect(self._toggle_with_focus)
         self._command_hotkey_signal.connect(self._toggle_command_capture)
@@ -335,74 +337,89 @@ class VoiceInputApp(QObject):
 
     # ── Streaming pipeline (UI thread, fed by Qt signals from worker) ────
 
-    def _on_streaming_committed(self, raw_text: str) -> None:
-        """A new committed dictation delta arrived from the streamer.
+    def _on_streaming_preview(self, raw_text: str) -> None:
+        """Live preview text from the streamer (rolling-window, may flicker).
 
-        Streaming is PURE DICTATION — commands have their own hotkey and
-        flow (see _on_command_hotkey). The classify-per-delta logic from
-        earlier S3 was removed because it created lifecycle hazards
-        (command nulled _saved_hwnd → subsequent dictation discarded).
+        Drives the preview UI surface ONLY — never injects into the user's
+        editor. The editor sees text only at finalize (silence-detected
+        end-of-utterance), where we run a fresh full-quality transcribe
+        on the whole utterance audio for accuracy.
         """
-        if not raw_text or not raw_text.strip():
+        if self._preview_window is not None:
+            self._preview_window.set_text(raw_text)
+
+    def _finalize_streaming_utterance(self) -> None:
+        """End-of-utterance: run final transcribe + cleanup + inject.
+
+        Called when the silence-poll timer detects a natural pause after
+        speech. Runs a fresh transcribe on the WHOLE audio captured since
+        the last finalize so the committed text isn't tied to any
+        particular rolling-window state.
+        """
+        if self._streamer is None:
+            return
+        # Pause the preview worker so the audio buffer is stable while we
+        # snapshot it for the final transcribe.
+        was_paused = self._streamer.is_paused
+        self._streamer.pause()
+        try:
+            text = self._streamer.finalize()
+        finally:
+            if not was_paused:
+                self._streamer.resume()
+
+        if not text or not text.strip():
+            logger.info("Finalize produced no text — nothing to inject")
+            self._fade_preview()
             return
 
-        cleaned = cleanup_text(raw_text)
+        cleaned = cleanup_text(text)
         if not cleaned:
+            self._fade_preview()
             return
 
-        # Continuation rule: if the previous committed chunk did NOT end a
-        # sentence, this chunk is mid-sentence and shouldn't start with a
-        # capital letter. cleanup_text() capitalises each chunk in
-        # isolation; we patch up the boundary case here where it has full
-        # context. Result: "...what happens as we proceed" instead of
-        # "...what happens As we Proceed".
+        # Cross-utterance capitalisation: lowercase first letter if previous
+        # injection didn't end a sentence (rare across utterances but
+        # possible when user pauses mid-sentence).
         if (
             self._streaming_injected_any
             and not self._streaming_last_ended_sentence
-            and cleaned
             and cleaned[0].isupper()
         ):
             cleaned = cleaned[0].lower() + cleaned[1:]
-
-        # Track whether THIS chunk ends a sentence (drives the next chunk's
-        # capitalisation rule above).
         self._streaming_last_ended_sentence = cleaned.rstrip().endswith((".", "!", "?"))
 
-        # First commit needs an explicit focus restore + settle delay.
-        # Subsequent commits paste immediately into the still-focused target.
-        # Set _streaming_injected_any synchronously (BEFORE the QTimer fires)
-        # so a second commit arriving inside the settle window doesn't
-        # double-restore focus and double-inject (regression of e576c01).
+        # First commit gets focus-restore + settle delay; subsequent
+        # commits paste into the already-focused target.
         if not self._streaming_injected_any:
             hwnd = self._saved_hwnd
             if hwnd and is_window_valid(hwnd):
                 restore_foreground_window(hwnd)
-                self._streaming_injected_any = True  # set before timer fires
+                self._streaming_injected_any = True
                 QTimer.singleShot(
                     STREAM_FOCUS_SETTLE_MS,
                     lambda t=cleaned: self._inject_streaming_chunk(t),
                 )
                 return
             else:
-                # No valid target: log once, then absorb future deltas as
-                # subsequent-chunks (which will at least try to paste into
-                # whatever is currently foreground, even if it's not the
-                # original target).
-                logger.warning("Streaming: no valid focus target on first delta")
+                logger.warning("Streaming: no valid focus target at finalize")
                 self._streaming_injected_any = True
-                # fall through to subsequent-chunks path
 
-        # Subsequent chunks: paste immediately, prepend a space so words
-        # don't smash together across deltas.
         self._inject_streaming_chunk(" " + cleaned)
 
     def _inject_streaming_chunk(self, text: str) -> None:
-        """Paste a streaming chunk via clipboard. Marks session as injected."""
+        """Paste finalized utterance text into the focused editor."""
         if not text:
             return
-        logger.info("Streaming inject: %r", text[:60])
+        logger.info("Streaming inject (finalized): %r", text[:80])
         inject_text(text)
         self._streaming_injected_any = True
+        self._fade_preview()
+
+    def _fade_preview(self) -> None:
+        """Tell the preview UI to fade its current contents away."""
+        if self._preview_window is not None:
+            self._preview_window.fade_out()
 
     # ── VAD-driven lifecycle (shared poll handler) ────────────────────────
 
@@ -418,14 +435,29 @@ class VoiceInputApp(QObject):
             self._poll_silence_streaming()
 
     def _poll_silence_streaming(self) -> None:
-        """Auto-pause / auto-stop transitions for streaming dictation.
+        """Lifecycle transitions for streaming dictation.
 
+        - Speech detected, then silence ≥ STREAM_FINALIZE_AFTER_SPEECH_SECONDS
+          AND we have un-finalized audio: FINALIZE — run the clean transcribe
+          + inject path. This is the primary "commit" trigger now.
         - Continuous silence ≥ STREAM_AUTO_STOP_SECONDS: end the session.
-        - Continuous silence ≥ STREAM_AUTO_PAUSE_SECONDS: pause Whisper rounds
-          (audio still buffers; resume on next loud sample).
-        - Otherwise: ensure we're resumed.
+        - Continuous silence ≥ STREAM_AUTO_PAUSE_SECONDS (and no speech yet
+          OR already finalized): pause preview rounds. Audio still buffers.
+        - Otherwise: ensure preview is running.
         """
         silence = self._silence_monitor.silence_duration()
+
+        # End-of-utterance finalize: speech happened, then a clear pause.
+        if (
+            self._silence_monitor.speech_detected()
+            and silence >= STREAM_FINALIZE_AFTER_SPEECH_SECONDS
+        ):
+            logger.info("Streaming finalize: %.2fs silence after speech", silence)
+            self._finalize_streaming_utterance()
+            # Reset the silence monitor so the next utterance's timing starts fresh.
+            self._silence_monitor.reset()
+            return
+
         if silence >= STREAM_AUTO_STOP_SECONDS:
             logger.info("Streaming auto-stop after %.1fs silence", silence)
             self._stop_streaming()
@@ -466,15 +498,6 @@ class VoiceInputApp(QObject):
         self._saved_hwnd = None
         self.state_changed.emit(STATE_IDLE, "Command cancelled")
         QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
-
-    def _on_streaming_tentative(self, text: str) -> None:
-        """Tentative tail update — currently just logged.
-
-        Future: render as a faint overlay on/near the bar strip so the user
-        sees what's still flickering. Not visualised yet to keep S3 small.
-        """
-        if text:
-            logger.debug("Streaming tentative: %r", text[:80])
 
     def _on_error(self, message: str) -> None:
         """Handle error (UI thread)."""
@@ -755,6 +778,20 @@ class VoiceInputApp(QObject):
 
         self._streaming_injected_any = False
         self._streaming_last_ended_sentence = True  # treat session start as sentence break
+
+        # Build preview window lazily so first-streaming-launch is the only
+        # time we pay the QWidget construction cost.
+        if self._preview_window is None:
+            from .ui.preview import StreamingPreviewWindow
+            self._preview_window = StreamingPreviewWindow()
+        # Anchor preview to the left of the floating widget.
+        if self._widget is not None:
+            self._preview_window.position_near_widget(
+                self._widget.pos(), self._widget.width(), self._widget.height(),
+            )
+        self._preview_window.clear()
+        self._preview_window.show()
+
         self._streamer = StreamingTranscriber(
             self._streaming_recognizer,
             sample_rate=SAMPLE_RATE,
@@ -763,8 +800,7 @@ class VoiceInputApp(QObject):
             language=self._settings.language,
             initial_prompt=initial_prompt,
             vad_min_silence_ms=STREAM_VAD_MIN_SILENCE_MS,
-            on_committed=lambda t: self.streaming_committed.emit(t),
-            on_tentative=lambda t: self.streaming_tentative.emit(t),
+            on_preview=lambda t: self.streaming_preview.emit(t),
         )
         self._streamer.start()
         # Recorder feeds raw chunks straight into the streamer's buffer.
@@ -813,22 +849,33 @@ class VoiceInputApp(QObject):
         self._timeout_timer.start(TRANSCRIPTION_TIMEOUT_SECONDS * 1000)
 
     def _stop_streaming(self) -> None:
-        """Tear down streaming. Recorder keeps the WAV around as a fallback
-        but we don't transcribe it again — the streamer already produced
-        committed text mid-flight.
+        """Tear down streaming. If there's pending un-finalized speech in
+        the buffer, run a final pass on it so the user doesn't lose what
+        they just said by pressing the hotkey to stop.
         """
         logger.info("Stopping streaming")
         # Stop polling FIRST so a tick mid-teardown can't re-trigger transitions.
         self._silence_poll_timer.stop()
-        # Detach the chunk callback so no further audio reaches the streamer
-        # after we ask it to stop.
+
+        # If speech happened and we haven't finalized recently, capture it
+        # before tearing down. This is the "user pressed hotkey while still
+        # mid-sentence" path.
+        if self._streamer is not None and self._silence_monitor.speech_detected():
+            try:
+                self._finalize_streaming_utterance()
+            except Exception as e:
+                logger.warning("Final-flush at stop failed: %s", e)
+
+        # Detach the chunk callback so no further audio reaches the streamer.
         self._recorder.set_chunk_callback(None)
         # Cancel rather than stop() so we don't write a redundant WAV.
         self._recorder.cancel()
         if self._streamer:
             self._streamer.stop()
             self._streamer = None
-        # No PROCESSING phase in streaming — text was injected as it came.
+        if self._preview_window is not None:
+            self._preview_window.fade_out()
+
         self.state_changed.emit(STATE_IDLE, "Done!")
         QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
 
