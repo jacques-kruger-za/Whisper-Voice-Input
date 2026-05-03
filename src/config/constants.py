@@ -1,7 +1,7 @@
 """Application constants."""
 
 APP_NAME = "Whisper Voice Input"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.1.0"
 APP_AUTHOR = "WhisperVoiceInput"
 
 # Default hotkey (Ctrl+Shift+Space)

@@ -28,16 +28,32 @@ The work below was largely informed by GitHub issues #1–#6 and a series of dic
 
 ---
 
-## In Progress — Real-time Streaming (issue #4)
+## Real-time Streaming (issue #4) — Shipped
 
-Replaces the record-then-transcribe-batch lifecycle with continuous transcription. Architecture sketched in 4 phases, the first two of which are on `feat/streaming-s1`:
+What ended up in the box was different from the original plan. The first attempt (S1+S2 LocalAgreement K=2 word-prefix commits) had structural reliability problems — text getting lost when round outputs disagreed, dribble fragments when thresholds were tuned the other way. After a real session showed 25–30 words of speech producing zero commits, the architecture got rebuilt around **preview-and-finalize** instead of incremental commits.
 
-- [x] **S1 · Sliding-window substrate** — `StreamingTranscriber` class with rolling 12-second buffer, worker thread that calls `transcribe_array()` on a numpy buffer every ~1 second. VAD min-silence reduced to 500ms so segment boundaries fire on natural pauses.
-- [x] **S2 · LocalAgreement-K commit logic** — word-level hold-back algorithm. A word commits only after appearing in 2 consecutive rounds at the same logical position. Two callbacks: `on_committed(text)` for stable output, `on_tentative(text)` for the still-flickering tail. 1.5-second buffer minimum prevents short-clip hallucinations from being committed.
-- [ ] **S3 · App integration** — recorder fires audio chunks live (not just on stop); app routes committed segments through cleanup → command-classify → inject. Wake-word commands fire when a *segment* (not full utterance) starts with the wake word. Single `STREAMING` state replaces RECORDING/PROCESSING split.
-- [ ] **S4 · Stability** — mid-stream focus loss (pause-and-resume injection), hotkey-during-stream = stop, transcription error mid-stream doesn't crash, final flush of pending tentative on stop.
+### Final architecture
 
-S3 will sit behind a `streaming_mode` settings flag during testing so batch mode remains the fallback.
+- [x] **Rolling-window preview pipeline** — worker thread runs `transcribe_array()` on the last 8 seconds every ~1 second. Output goes to a translucent floating preview panel (no editor injection). Updates per round, may flicker as the model revises with more context. No `initial_prompt` here (avoids the "Jeanré, Jeanré, Jeanré..." vocab-spam hallucination).
+- [x] **Utterance-finalize commit** — when VAD detects ≥1.0s of silence after speech, a fresh full-context `transcribe()` runs on the entire audio captured since the last finalize. That clean text goes through `cleanup_text` and lands in the focused editor as one block. Reliability matches batch mode because each commit is a full transcribe pass, not an aggregation of round outputs.
+- [x] **Async stop-finalize** — pressing the hotkey to stop flips state to PROCESSING immediately; finalize runs on a background thread; result lands via Qt signal. No more 3-second frozen widget on stop.
+- [x] **Streaming-specific tuning** — separate `streaming_model` setting (default `base`), reduced `beam_size`/`best_of`, separate window length and finalize thresholds. Tuning surface lives in `constants.py`.
+- [x] **VAD-driven session lifecycle** — `SilenceMonitor` audio-thread → UI poll. Auto-pause Whisper rounds at 2s silence; auto-stop session at 60s; finalize commit at 1.0s post-speech silence. Single-press command capture also driven by VAD (1.5s post-speech fires the keystroke; 8s no-speech cancels).
+- [x] **Live preview UI** — translucent panel anchored left of widget. Right-aligned text (newest near widget), elided on the left under an alpha-gradient fade so older words appear to roll off. Frameless, click-through. Fades on commit.
+
+### Collapsed / removed during the rebuild
+
+- LocalAgreement-K word-prefix commit logic (~150 lines)
+- `MIN_COMMIT_WORDS` gate, `RELAX_AFTER_SECONDS` stuck-stream timeout
+- The `_streaming_committed` / `_streaming_tentative` signal pair (replaced by `_streaming_preview` + `_streaming_finalized`)
+- `CommitTracker` class
+
+### Sub-modality split: dictation vs commands
+
+Earlier S3 prototype had commands and dictation sharing a session via wake-word prefix on every preview round. This created bugs (`_saved_hwnd` consumed by command firing, subsequent dictation discarded). Final design separates them entirely:
+
+- [x] **Dictation hotkey** (`Ctrl+Shift+Space`): pure streaming/batch, no command classification per round
+- [x] **Command hotkey** (`Ctrl+Shift+C`): single-shot batch capture, fires keystroke on VAD-detected end-of-utterance. Hotkey is the wake — no spoken `"command"` prefix needed when triggered this way (`require_wake_word=False` in classify_transcription)
 
 ---
 
@@ -45,7 +61,7 @@ S3 will sit behind a `streaming_mode` settings flag during testing so batch mode
 
 ### Issue #1 — Dock widget + hide-to-bar
 
-Dock widget to right edge, slide vertical only. Hide collapses to a thin strip; hover restores. Requires shape change from circle to rectangle. *Touches the widget bounding rect we restructured for #2 — natural follow-up after streaming integration lands.*
+Dock widget to right edge, slide vertical only. Hide collapses to a thin strip; hover restores. Requires shape change from circle to rectangle. **The largest user-visible gap remaining** — repeatedly hit during the streaming work because the bar-strip layout and now the preview panel both anchor relative to the widget. Docking would make those anchors stable.
 
 ### Issue #5 — Clipboard history in tray
 
@@ -92,11 +108,19 @@ Windows-2026 styling, light/dark system theme adaptation. *We just refactored se
 
 ---
 
+## Known Limitations (worth fixing soon)
+
+- **Custom vocabulary is weak for words with English homophones.** "Jeanré" is consistently transcribed as "Jean Ray" / "John Ray" because the prompt-bias mechanism can't override Whisper's training distribution. Sentence-style prompt format ("Vocabulary: foo, bar.") ships now — marginal win, doesn't solve the homophone case.
+  - **Reliable answer**: alias-replacement post-processing. Each vocab entry gets a list of common mishearings; cleanup substitutes them with the canonical form. No model bias involved, deterministic. Needs UI for adding aliases (per-word inline prompt simplest).
+- **Sound Recorder app crashes when this app is running.** Likely WASAPI device contention / stream-leak. Workaround: quit from tray before using Sound Recorder. Not yet investigated.
+- **Saved-but-disconnected device produces a warning every session.** Falls back to system default but logs `Configured device 'X' failed`. Should suppress after first attempt or surface a one-time "device not connected" notification.
+
 ## Future Considerations
 
 | Category | Features |
 | -------- | -------- |
 | Voice control | ~~Spoken punctuation, voice commands, custom vocabulary~~ ✅ shipped. Remaining: spoken text-formatting commands ("bold this", "select last sentence"), voice-driven snippet expansion |
+| Vocab accuracy | Per-word alias map (canonical → mishearings); auto-detect aliases by comparing user's speech against transcribed output |
 | Productivity | Custom text snippets triggered by phrase, quick phrases / templates, per-app shortcut profiles |
 | Voice | ~~Custom vocabulary~~ ✅. Multi-language hot-switch, per-app language overrides, language auto-detect quality improvement |
 | History | Favorites, export, search across past dictations |
@@ -110,7 +134,7 @@ Windows-2026 styling, light/dark system theme adaptation. *We just refactored se
 | ------- | ------ | ----- |
 | v1.0.0 | Shipped | Core functionality |
 | v1.0.1 | Shipped | Stability fixes, recovery mechanisms, language detection |
-| v1.1.0 | **In progress** | Voice commands & vocabulary, visual state redesign, real-time streaming (S1–S4) |
-| v1.2.0 | Planned | Issue #1 (dock + hide-to-bar), Issue #5 (clipboard history), MVP polish (onboarding, smart errors) |
-| v1.3.0 | Planned | Modern settings UI (issue #6), windows installer, auto-update |
+| v1.1.0 | **Ready to ship** | Voice commands & vocabulary (issue #2), visual state redesign (issue #2), preview-and-finalize streaming (issue #4), separate command hotkey, retired callout (issue #3), VAD lifecycle |
+| v1.2.0 | Next | Issue #1 (dock + hide-to-bar), custom-vocab alias replacement, MVP polish (onboarding, smart errors) |
+| v1.3.0 | Planned | Issue #5 (clipboard history), modern settings UI (issue #6), windows installer, auto-update |
 | v2.0.0 | Aspirational | Per-app shortcut profiles, snippet expansion, cross-platform |
