@@ -201,6 +201,22 @@ class SettingsWindow(QDialog):
         )
         layout.addRow("", self._streaming_check)
 
+        # Streaming uses its OWN (smaller, faster) model so per-round time
+        # stays near 1s on CPU. The batch 'Model' above is unaffected.
+        self._streaming_model_combo = QComboBox()
+        for model in WHISPER_MODELS:
+            label = model
+            if model == "tiny":
+                label += " (fastest, lowest accuracy)"
+            elif model == "base":
+                label += " (recommended for streaming)"
+            elif model == "small":
+                label += " (slow on CPU)"
+            elif model in ("medium", "large-v3"):
+                label += " (too slow for CPU streaming)"
+            self._streaming_model_combo.addItem(label, model)
+        layout.addRow("Streaming Model:", self._streaming_model_combo)
+
         return group
 
     def _create_startup_section(self) -> QGroupBox:
@@ -439,6 +455,13 @@ class SettingsWindow(QDialog):
         for i in range(self._model_combo.count()):
             if self._model_combo.itemData(i) == model:
                 self._model_combo.setCurrentIndex(i)
+                break
+
+        # Streaming model (separate from batch model)
+        streaming_model = getattr(self._settings, 'streaming_model', 'base')
+        for i in range(self._streaming_model_combo.count()):
+            if self._streaming_model_combo.itemData(i) == streaming_model:
+                self._streaming_model_combo.setCurrentIndex(i)
                 break
 
         # Language
@@ -687,6 +710,8 @@ class SettingsWindow(QDialog):
         # Recognition
         self._settings.engine = self._engine_combo.currentData()
         self._settings.model = self._model_combo.currentData()
+        if hasattr(self._settings, 'streaming_model'):
+            self._settings.streaming_model = self._streaming_model_combo.currentData()
         self._settings.language = self._language_combo.currentData()
         self._settings.openai_api_key = self._api_key_edit.text()
 

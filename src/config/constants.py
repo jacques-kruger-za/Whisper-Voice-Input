@@ -155,8 +155,10 @@ COMMAND_THRESHOLD = 65
 
 # Length of the rolling audio window passed to Whisper each round.
 # Longer = more context (better accuracy on long sentences) but heavier per-round
-# CPU. 12s gives Whisper enough context to disambiguate while staying fast.
-STREAM_WINDOW_SECONDS = 12.0
+# CPU. Streaming needs each round to finish in ~1s wall time; with the 'base'
+# model on a typical CPU, an 8s window keeps round time around 1.0-1.5s. The
+# 'small' model on this same window takes ~4-5s and is unsuitable for streaming.
+STREAM_WINDOW_SECONDS = 8.0
 
 # How often a new transcription round runs. Each round pays the full
 # transcribe-window cost, so this is the lower bound on commit latency.
@@ -167,11 +169,18 @@ STREAM_INTERVAL_SECONDS = 1.0
 # detected promptly during continuous dictation.
 STREAM_VAD_MIN_SILENCE_MS = 500
 
-# Whisper decoder parameters shared by transcribe() and transcribe_array().
-# Centralising avoids drift between batch and streaming paths.
+# Whisper decoder parameters for BATCH mode — quality-tuned, OK to be slow
+# because batch only runs once per utterance.
 WHISPER_BEAM_SIZE = 5
 WHISPER_BEST_OF = 5
 WHISPER_TEMPERATURE = 0.0
+
+# Whisper decoder parameters for STREAMING mode — speed-tuned. Beam=1 +
+# best_of=1 cuts per-round time roughly in half versus the batch settings.
+# Slight accuracy hit, but K=2 LocalAgreement compensates by only committing
+# words that survive across rounds.
+WHISPER_STREAM_BEAM_SIZE = 1
+WHISPER_STREAM_BEST_OF = 1
 
 # Settle delay before the FIRST streaming injection — gives the OS time to
 # move focus to the saved HWND before pyautogui.hotkey('ctrl', 'v') runs.

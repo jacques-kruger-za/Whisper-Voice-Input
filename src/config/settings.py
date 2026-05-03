@@ -35,6 +35,10 @@ class Settings:
             "audio_device": None,  # None = system default
             "engine": DEFAULT_ENGINE,
             "model": DEFAULT_MODEL,
+            # Streaming uses a separate (typically smaller/faster) model so
+            # rounds finish in ~1s wall time. 'base' is the practical default
+            # on CPUs; 'tiny' for slower hardware; 'small'+ usually too slow.
+            "streaming_model": "base",
             "language": DEFAULT_LANGUAGE,
             "openai_api_key": "",
             "start_with_windows": False,
@@ -121,6 +125,19 @@ class Settings:
     @model.setter
     def model(self, value: str) -> None:
         self.set("model", value)
+
+    @property
+    def streaming_model(self) -> str:
+        """Whisper model used by the streaming pipeline. Should usually be
+        smaller/faster than the batch model so rounds finish in ~1s on CPU.
+        Falls back to 'base' if the saved value is missing or empty.
+        """
+        v = self._settings.get("streaming_model")
+        return v if v else "base"
+
+    @streaming_model.setter
+    def streaming_model(self, value: str) -> None:
+        self.set("streaming_model", value)
 
     @property
     def language(self) -> str:

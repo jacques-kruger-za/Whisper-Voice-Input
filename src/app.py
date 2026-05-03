@@ -79,6 +79,12 @@ class VoiceInputApp(QObject):
         self._recorder = AudioRecorder(self._settings.audio_device)
         logger.debug("Creating local recognizer with model: %s", self._settings.model)
         self._local_recognizer = LocalWhisperRecognizer(self._settings.model)
+        # Separate recognizer for streaming. Holds its own (typically smaller)
+        # model loaded into memory. Lets users keep 'small' for batch quality
+        # and 'base' for streaming speed without paying re-load cost on every
+        # mode switch.
+        logger.debug("Creating streaming recognizer with model: %s", self._settings.streaming_model)
+        self._streaming_recognizer = LocalWhisperRecognizer(self._settings.streaming_model)
         logger.debug("Creating API recognizer")
         self._api_recognizer = APIWhisperRecognizer(self._settings.openai_api_key)
         logger.debug("Creating command processor")
@@ -720,9 +726,13 @@ class VoiceInputApp(QObject):
         vocab = self._settings.custom_vocabulary
         initial_prompt = ", ".join(vocab) if vocab else None
 
+        # Ensure the streaming recognizer matches the user's chosen model.
+        # set_model is cheap when unchanged; reloads on first use otherwise.
+        self._streaming_recognizer.set_model(self._settings.streaming_model)
+
         self._streaming_injected_any = False
         self._streamer = StreamingTranscriber(
-            self._local_recognizer,
+            self._streaming_recognizer,
             sample_rate=SAMPLE_RATE,
             window_seconds=STREAM_WINDOW_SECONDS,
             interval_seconds=STREAM_INTERVAL_SECONDS,

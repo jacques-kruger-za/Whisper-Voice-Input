@@ -167,12 +167,14 @@ class LocalWhisperRecognizer(BaseRecognizer):
 
             prompt = initial_prompt[:224] if initial_prompt else None
 
-            from ..config.constants import WHISPER_BEAM_SIZE, WHISPER_BEST_OF, WHISPER_TEMPERATURE
+            from ..config.constants import (
+                WHISPER_STREAM_BEAM_SIZE, WHISPER_STREAM_BEST_OF, WHISPER_TEMPERATURE,
+            )
             segments, _info = self._model.transcribe(
                 samples,
                 language=lang,
-                beam_size=WHISPER_BEAM_SIZE,
-                best_of=WHISPER_BEST_OF,
+                beam_size=WHISPER_STREAM_BEAM_SIZE,
+                best_of=WHISPER_STREAM_BEST_OF,
                 temperature=WHISPER_TEMPERATURE,
                 condition_on_previous_text=False,  # streaming: each window stands alone
                 vad_filter=True,
