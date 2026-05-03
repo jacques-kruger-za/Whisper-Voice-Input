@@ -771,10 +771,29 @@ class VoiceInputApp(QObject):
         if self._settings.streaming_mode:
             self._start_streaming()
 
+    @staticmethod
+    def _build_vocab_prompt(vocab: list[str]) -> str | None:
+        """Construct a Whisper initial_prompt from custom vocabulary.
+
+        Whisper treats initial_prompt as the trailing context of an ongoing
+        transcript and biases output accordingly. Sentence-style framing
+        ('Vocabulary: foo, bar.') reads as natural-language context and
+        biases more reliably than a bare comma-separated list. Capped at
+        Whisper's 224-character input budget further upstream.
+
+        NOTE: prompt biasing helps with novel words ('rapidfuzz', made-up
+        names) but is weak for words with common English homophones —
+        Whisper's training distribution dominates. Post-processing alias
+        replacement (separate feature) is the reliable answer for that case.
+        """
+        if not vocab:
+            return None
+        return f"Vocabulary: {', '.join(vocab)}."
+
     def _start_streaming(self) -> None:
         """Spin up the streaming transcriber and hook the recorder to feed it."""
         vocab = self._settings.custom_vocabulary
-        initial_prompt = ", ".join(vocab) if vocab else None
+        initial_prompt = self._build_vocab_prompt(vocab)
 
         # Ensure the streaming recognizer matches the user's chosen model.
         # set_model is cheap when unchanged; reloads on first use otherwise.
@@ -944,11 +963,8 @@ class VoiceInputApp(QObject):
 
             # Build initial_prompt from custom vocabulary.
             # Presence of words = active. Empty list = no prompt sent.
-            initial_prompt = None
             vocab = self._settings.custom_vocabulary
-            if vocab:
-                initial_prompt = ", ".join(vocab)
-                logger.debug("Custom vocabulary active: %d words", len(vocab))
+            initial_prompt = self._build_vocab_prompt(vocab)
 
             # Transcribe with segment streaming
             logger.debug("Transcribing audio with language: %s", self._settings.language)
