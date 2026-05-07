@@ -258,6 +258,13 @@ src/
 
 See `CLAUDE.md` for developer documentation.
 
+### Verification
+
+```bash
+python -m compileall src tests
+python tests/verify_widget_sizes.py
+```
+
 ## Credits
 
 - [OpenAI Whisper](https://github.com/openai/whisper) - Speech recognition model

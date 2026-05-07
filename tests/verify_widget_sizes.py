@@ -104,9 +104,22 @@ def test_widget_set_size():
     assert "self._size = WIDGET_SIZES[size_key]" in content, "set_size should update _size from WIDGET_SIZES"
     print("  ✓ Updates _size from WIDGET_SIZES dict")
 
-    # Check it calls setFixedSize
-    assert "self.setFixedSize(self._size, self._size)" in content, "set_size should call setFixedSize"
-    print("  ✓ Calls setFixedSize() with new size")
+    # Check it recalculates the widened bounding box for the audio strip layout
+    assert "total_width = self._size * (1 + BAR_STRIP_MULTIPLIER)" in content, \
+        "set_size should recalculate total width for the bar strip layout"
+    print("  ✓ Recalculates total widget width for the bar strip")
+
+    # Check it resizes using the widened bounding box instead of a square widget
+    assert "self.setFixedSize(total_width, self._size)" in content, \
+        "set_size should resize the widened bounding box"
+    print("  ✓ Calls setFixedSize() with widened bounding box")
+
+    # Check it keeps the circle anchored after resize
+    assert "old_circle_right = self.x() + self.width()" in content, \
+        "set_size should preserve the circle anchor before resizing"
+    assert "self.move(old_circle_right - total_width, self.y())" in content, \
+        "set_size should restore the circle anchor after resizing"
+    print("  ✓ Preserves the circle anchor while resizing")
 
     # Check it re-initializes visualizers
     assert "_init_visualizers()" in content, "set_size should re-initialize visualizers"
