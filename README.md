@@ -10,6 +10,8 @@ A Windows desktop application that converts speech to text using OpenAI's Whispe
 - **Dual Engines** - Local (offline) or OpenAI API (cloud)
 - **Real-time Feedback** - Visual audio level display during recording
 - **Text Cleanup** - Removes filler words, fixes punctuation
+- **Voice Editing** - Spoken punctuation and wake-word editor commands
+- **Vocabulary Hints** - Bias Whisper toward names, jargon, and custom terms
 - **Customizable** - Widget size, hotkey, language, model selection
 
 ## How It Works
@@ -98,18 +100,20 @@ pip install -r requirements.txt
 python -m src.main
 ```
 
-### Using Build.bat
+### Using `build.bat`
 
-Alternatively, run `Build.bat` which automatically:
+Alternatively, run `build.bat` which automatically:
 1. Creates a Python 3.12 virtual environment
 2. Installs all dependencies
 3. Builds a standalone executable
 
 ```bash
-Build.bat
+build.bat
 ```
 
 Output: `dist\Whisper Voice Input.exe`
+
+> **Note**: `build.bat` currently bootstraps Python from the default per-user install path `C:\Users\Jacques Kruger\AppData\Local\Programs\Python\Python312\python.exe`. If Python 3.12 is installed elsewhere on your machine, update that path in the script before running it.
 
 ### First Run
 
@@ -160,8 +164,15 @@ Access settings via:
 | Model | tiny, base, small, medium, large-v3 |
 | Language | English (Auto), US, UK, South Africa |
 | API Key | Your OpenAI API key (for API engine) |
+| Custom Vocabulary | Bias transcription toward names, products, and jargon |
+| Spoken Punctuation | Convert phrases like "comma" or "new line" while dictating |
+| Editor Commands | Say `command save`, `command undo`, etc. to send keystrokes |
 
-Settings stored in: `%AppData%\Whisper Voice Input\settings.json`
+Settings are stored in the per-user config directory managed by `platformdirs`, typically:
+
+`%LOCALAPPDATA%\WhisperVoiceInput\Whisper Voice Input\settings.json`
+
+Built-in editor commands include `command save`, `command undo`, `command redo`, `command copy`, `command paste`, `command cut`, `command select all`, and `command find`. You can also add custom commands and custom spoken punctuation from the **Commands & Vocabulary** tab.
 
 ## Privacy & Security
 
