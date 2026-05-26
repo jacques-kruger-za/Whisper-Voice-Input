@@ -807,13 +807,10 @@ class VoiceInputApp(QObject):
         if self._preview_window is None:
             from .ui.preview import StreamingPreviewWindow
             self._preview_window = StreamingPreviewWindow()
-        # Anchor preview to the left of the floating widget.
-        if self._widget is not None:
-            self._preview_window.position_near_widget(
-                self._widget.pos(), self._widget.width(), self._widget.height(),
-            )
+        # Preview stays hidden until the first streaming round arrives —
+        # an empty box would be visual noise.
         self._preview_window.clear()
-        self._preview_window.show()
+        self._preview_window.hide()
 
         self._streamer = StreamingTranscriber(
             self._streaming_recognizer,
