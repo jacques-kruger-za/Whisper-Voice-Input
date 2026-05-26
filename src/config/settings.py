@@ -15,6 +15,7 @@ from .constants import (
     DEFAULT_ENGINE,
     ENGINE_LOCAL,
     DEFAULT_WIDGET_SIZE,
+    SUPPORTED_LANGUAGES,
 )
 
 
@@ -141,8 +142,14 @@ class Settings:
 
     @property
     def language(self) -> str:
-        """Get transcription language."""
-        return self._settings.get("language", DEFAULT_LANGUAGE)
+        """Get transcription language. Falls back to the default if the
+        saved value is no longer in the supported set (e.g. legacy
+        settings.json from before the language list was trimmed).
+        """
+        value = self._settings.get("language", DEFAULT_LANGUAGE)
+        if value not in SUPPORTED_LANGUAGES:
+            return DEFAULT_LANGUAGE
+        return value
 
     @language.setter
     def language(self, value: str) -> None:

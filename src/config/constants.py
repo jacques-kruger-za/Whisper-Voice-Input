@@ -1,7 +1,7 @@
 """Application constants."""
 
 APP_NAME = "Whisper Voice Input"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 APP_AUTHOR = "WhisperVoiceInput"
 
 # Default hotkey (Ctrl+Shift+Space)
@@ -26,44 +26,12 @@ CHANNELS = 1  # Mono audio
 WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 DEFAULT_MODEL = "base"
 
-# Supported languages
-# "auto" = let Whisper auto-detect (unreliable on short audio)
-# All other codes force the language explicitly to Whisper
+# Supported languages — deliberately constrained to English + Afrikaans so
+# Whisper doesn't waste effort hunting for any other language. Each code is
+# forced explicitly at transcribe time.
 SUPPORTED_LANGUAGES = {
-    "auto": "Auto-detect",
     "en": "English",
     "af": "Afrikaans",
-    "en-US": "English (US)",
-    "en-GB": "English (UK)",
-    "en-ZA": "English (South Africa)",
-    "es": "Spanish",
-    "fr": "French",
-    "de": "German",
-    "it": "Italian",
-    "pt": "Portuguese",
-    "nl": "Dutch",
-    "ru": "Russian",
-    "zh": "Chinese",
-    "ja": "Japanese",
-    "ko": "Korean",
-    "ar": "Arabic",
-    "hi": "Hindi",
-    "pl": "Polish",
-    "tr": "Turkish",
-    "vi": "Vietnamese",
-    "sv": "Swedish",
-    "no": "Norwegian",
-    "da": "Danish",
-    "fi": "Finnish",
-    "cs": "Czech",
-    "ro": "Romanian",
-    "uk": "Ukrainian",
-    "el": "Greek",
-    "th": "Thai",
-    "id": "Indonesian",
-    "ms": "Malay",
-    "he": "Hebrew",
-    "fa": "Persian",
 }
 DEFAULT_LANGUAGE = "en"
 
