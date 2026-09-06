@@ -779,12 +779,15 @@ class SettingsWindow(QDialog):
 
             if self._settings.start_with_windows:
                 import sys
-                exe_path = sys.executable
-                script_path = sys.argv[0] if sys.argv else ""
-                if script_path:
-                    value = f'"{exe_path}" "{script_path}"'
+                from pathlib import Path
+
+                if getattr(sys, "frozen", False):
+                    value = f'"{sys.executable}"'
                 else:
-                    value = f'"{exe_path}"'
+                    # ponytail: run.vbs already does venv pythonw + project cwd + -m src.main;
+                    # sys.argv[0] alone is not re-runnable (src/main.py needs package imports).
+                    vbs = Path(__file__).resolve().parents[2] / "run.vbs"
+                    value = f'wscript.exe "{vbs}"'
                 winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, value)
             else:
                 try:
