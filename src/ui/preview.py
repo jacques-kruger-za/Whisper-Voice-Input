@@ -8,7 +8,7 @@ Visual identity:
   vertically centred on it. Text is right-aligned so the newest words are
   nearest the widget and the block grows LEFT as more arrives, up to a cap
   of one fifth of the screen width, then wraps.
-- PREVIEW_VISIBLE_LINES at full opacity; one older line above fades out.
+- Hard cap of PREVIEW_VISIBLE_LINES lines; older text rolls off the top.
 - No panel. A very faint glow in the widget's active colour sits behind the
   text, strongest at the widget side and dissolving leftward.
 - Frameless, no focus, click-through.
@@ -38,10 +38,11 @@ PREVIEW_LINE_SPACING_PX = 2        # extra px between wrapped lines
 PREVIEW_GAP_PX = 6                 # gap between text block and the widget
 PREVIEW_TEXT_ALPHA = 230
 PREVIEW_VISIBLE_LINES = 2          # lines shown at full opacity
-PREVIEW_FADE_LINES = 1             # older lines rendered above, fading out
+PREVIEW_FADE_LINES = 0             # older lines rendered above, fading out (0 = hard two-line cap)
 PREVIEW_FADE_OUT_MS = 600          # length of the disappear animation
 PREVIEW_SCREEN_MARGIN_PX = 16      # gap from the screen edges (fallback anchor)
 PREVIEW_GLOW_ALPHA = 0.16          # peak alpha of the accent glow, widget side
+PREVIEW_GLOW_RADIUS = 5            # corner radius of the glow; right edge is flat against the widget
 PREVIEW_TEXT_LIGHT_MODE = (70, 70, 75)       # dark grey on a light desktop
 PREVIEW_TEXT_DARK_MODE = (200, 200, 205)     # light grey on a dark desktop
 
@@ -239,8 +240,10 @@ class StreamingPreviewWindow(QWidget):
         glow.setColorAt(1.0, peak)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(glow)
-        radius = rect.height() / 2
-        painter.drawRoundedRect(rect, radius, radius)
+        # Right corners run past the window edge so the glow ends flat
+        # against the widget instead of curving away from it.
+        r = PREVIEW_GLOW_RADIUS
+        painter.drawRoundedRect(rect.adjusted(0, 0, r, 0), r, r)
 
         font = self._font()
         painter.setFont(font)
