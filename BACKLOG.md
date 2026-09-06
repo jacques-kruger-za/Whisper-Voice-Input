@@ -12,11 +12,17 @@ Raw inbox for features, issues, and bugs. Unsorted, ungroomed, no sequencing. Ca
 
 ## Bugs
 
-- [ ]
+- [ ] Sound Recorder crashes while this app runs (WASAPI contention?) — see ROADMAP Known Limitations
+- [ ] Saved-but-disconnected mic logs a warning every session; suppress or notify once
 
 ## From GitHub Issues
 
 <!-- Auto-populated by /project-hygiene --fix when open GitHub issues aren't reflected here. -->
+
+- [ ] #1 Dock widget to right edge + hide-to-bar (scoped in ROADMAP → v1.3.0)
+- [ ] #5 Clipboard history in tray (scoped in ROADMAP → v1.4.0)
+- [ ] #6 Modern settings UI, light/dark theme (scoped in ROADMAP → v1.4.0)
+- [ ] #2, #3, #4 shipped in v1.1.0 but still open on GitHub — close them
 
 ## From Sessions
 

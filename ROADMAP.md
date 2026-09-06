@@ -39,7 +39,7 @@ What ended up in the box was different from the original plan. The first attempt
 - [x] **Async stop-finalize** — pressing the hotkey to stop flips state to PROCESSING immediately; finalize runs on a background thread; result lands via Qt signal. No more 3-second frozen widget on stop.
 - [x] **Streaming-specific tuning** — separate `streaming_model` setting (default `base`), reduced `beam_size`/`best_of`, separate window length and finalize thresholds. Tuning surface lives in `constants.py`.
 - [x] **VAD-driven session lifecycle** — `SilenceMonitor` audio-thread → UI poll. Auto-pause Whisper rounds at 2s silence; auto-stop session at 60s; finalize commit at 1.0s post-speech silence. Single-press command capture also driven by VAD (1.5s post-speech fires the keystroke; 8s no-speech cancels).
-- [x] **Live preview UI** — translucent panel anchored left of widget. Right-aligned text (newest near widget), elided on the left under an alpha-gradient fade so older words appear to roll off. Frameless, click-through. Fades on commit.
+- [x] **Live preview UI** — translucent panel anchored bottom-right of the primary screen, one fifth of screen width, grows upward; three lines at full opacity with older lines fading at the top edge. Frameless, click-through. Fades on commit. (2026-09-07: fixed a race where a round in flight during finalize/stop re-showed the panel and it never cleared.)
 
 ### Collapsed / removed during the rebuild
 
@@ -134,7 +134,8 @@ Windows-2026 styling, light/dark system theme adaptation. *We just refactored se
 | ------- | ------ | ----- |
 | v1.0.0 | Shipped | Core functionality |
 | v1.0.1 | Shipped | Stability fixes, recovery mechanisms, language detection |
-| v1.1.0 | **Ready to ship** | Voice commands & vocabulary (issue #2), visual state redesign (issue #2), preview-and-finalize streaming (issue #4), separate command hotkey, retired callout (issue #3), VAD lifecycle |
-| v1.2.0 | Next | Issue #1 (dock + hide-to-bar), custom-vocab alias replacement, MVP polish (onboarding, smart errors) |
-| v1.3.0 | Planned | Issue #5 (clipboard history), modern settings UI (issue #6), windows installer, auto-update |
+| v1.1.0 | Shipped 2026-05-03 | Voice commands & vocabulary (issue #2), visual state redesign (issue #2), preview-and-finalize streaming (issue #4), separate command hotkey, retired callout (issue #3), VAD lifecycle |
+| v1.2.0 | Shipped 2026-05-26 | Language list locked to English + Afrikaans, bottom-right preview panel, autostart fix |
+| v1.3.0 | Next | Issue #1 (dock + hide-to-bar), custom-vocab alias replacement, MVP polish (onboarding, smart errors) |
+| v1.4.0 | Planned | Issue #5 (clipboard history), modern settings UI (issue #6), windows installer, auto-update |
 | v2.0.0 | Aspirational | Per-app shortcut profiles, snippet expansion, cross-platform |
