@@ -46,7 +46,7 @@ For *future* work, see `ROADMAP.md` (sequenced) and `BACKLOG.md` (raw inbox).
 - **2026-09-07** — Streamer generation counter: a preview round in flight during finalize/stop is dropped and the rolling window is cleared on commit, so committed text is never re-shown.
 - **2026-05-26** — Preview panel anchored bottom-right of the primary screen, independent of the widget; earlier widget-relative anchoring moved with the widget and fought the bar strip.
 - **2026-05-26** — Language list locked to English + Afrikaans.
-- **2026-03-14** — CONTEXT.md added for workstream tracking.
+- **2026-03-14** — CONTEXT.md added for workstream tracking. Retired 2026-09-07: it had gone stale and duplicated this file.
 - **2026-03-08** — Bug-fix sweep: hotkey registration, focus restore after transcription, transcription timeout.
 - **Streaming dribble gate + 1 Hz cadence** — chosen to keep the user-visible text from flickering while leaving room for late-arriving commits.
 

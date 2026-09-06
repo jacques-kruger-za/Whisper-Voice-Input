@@ -127,7 +127,7 @@ Command classification happens after transcription:
 
 ## Settings Storage
 
-Location: `%AppData%/Whisper Voice Input/settings.json`
+Location: `%LOCALAPPDATA%/WhisperVoiceInput/Whisper Voice Input/settings.json` (via `platformdirs.user_config_dir(APP_NAME, APP_AUTHOR)`)
 
 Managed by `Settings` class in `src/config/settings.py` with auto-save on property changes.
 
