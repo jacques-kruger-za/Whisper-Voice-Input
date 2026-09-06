@@ -1,11 +1,16 @@
-"""Circular floating recording widget with audio-reactive visualizations."""
+"""Docked recording widget with audio-reactive visualizations.
+
+The widget is pinned to the right edge of the primary screen and can only
+be dragged vertically. "Hide" collapses it to a thin bar on the edge that
+expands while hovered; "Disable" hides it entirely (tray restores it).
+"""
 
 import math
 import os
 import random
 import sys
 from collections import deque
-from PyQt6.QtWidgets import QWidget, QApplication, QLabel, QVBoxLayout
+from PyQt6.QtWidgets import QWidget, QApplication, QLabel, QVBoxLayout, QMenu
 from PyQt6.QtCore import Qt, QPoint, QTimer, pyqtSignal, QRectF, QPointF
 from PyQt6.QtGui import (
     QPainter, QColor, QPen, QBrush, QRadialGradient,
@@ -55,6 +60,8 @@ from ..config.constants import (
     WIDGET_SIZES,
     DEFAULT_WIDGET_SIZE,
     WIDGET_OPACITY,
+    WIDGET_DOCK_BAR_WIDTH,
+    WIDGET_DOCK_DEFAULT_Y,
     STATE_IDLE,
     STATE_RECORDING,
     STATE_PROCESSING,
@@ -263,9 +270,11 @@ class InfoTooltip(QWidget):
 
 
 class FloatingWidget(QWidget):
-    """Circular floating widget with stunning audio-reactive visualizations."""
+    """Edge-docked widget with audio-reactive visualizations."""
 
     clicked = pyqtSignal()
+    disable_requested = pyqtSignal()      # right-click → Disable
+    collapsed_changed = pyqtSignal(bool)  # right-click → Hide / Show
 
     def __init__(self, size_key: str = DEFAULT_WIDGET_SIZE, parent=None):
         super().__init__(parent)
@@ -276,7 +285,12 @@ class FloatingWidget(QWidget):
         self._audio_level = 0.0
         self._smoothed_audio = 0.0  # Smoothed for glow effect
 
-        # Drag handling
+        # Dock state: collapsed = thin bar; hover temporarily expands it.
+        self._collapsed = False
+        self._hover_expanded = False
+        self._menu_open = False
+
+        # Drag handling (vertical only — x is pinned to the screen edge)
         self._drag_start_pos: QPoint | None = None
         self._drag_start_widget_pos: QPoint | None = None
         self._total_drag_distance = 0
@@ -328,8 +342,9 @@ class FloatingWidget(QWidget):
         """Initialize the widget.
 
         Layout: bounding rect is (1 + BAR_STRIP_MULTIPLIER) × circle wide. The
-        circle sits on the right of the bounding rect; the bar strip occupies
-        the left portion and only paints during recording.
+        circle sits on the right of the bounding rect, flush with the screen
+        edge; the bar strip occupies the left portion and only paints during
+        recording. Collapsed, the rect is a WIDGET_DOCK_BAR_WIDTH-wide bar.
         """
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -338,12 +353,10 @@ class FloatingWidget(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMouseTracking(True)
-        total_width = self._size * (1 + BAR_STRIP_MULTIPLIER)
-        self.setFixedSize(total_width, self._size)
         self.setWindowOpacity(WIDGET_OPACITY)
 
         self._init_visualizers()
-        self._position_top_right()
+        self._apply_geometry(WIDGET_DOCK_DEFAULT_Y)
 
     def _init_visualizers(self) -> None:
         """Initialize vertical audio bars and pulse rings."""
@@ -365,56 +378,62 @@ class FloatingWidget(QWidget):
         # Create pulse rings (3 rings with staggered timing)
         self._pulse_rings = [PulseRing() for _ in range(3)]
 
-    def _position_top_right(self) -> None:
-        """Position widget so the CIRCLE sits at top-right of screen.
+    def _is_bar(self) -> bool:
+        """True when rendering as the thin collapsed bar."""
+        return self._collapsed and not self._hover_expanded
 
-        The widget's bounding rect now extends left for the bar strip, so we
-        offset by total width to keep the visible circle anchored to the
-        screen edge.
-        """
+    def _apply_geometry(self, y: int | None = None) -> None:
+        """Size for the current dock state and pin to the screen edge."""
+        if self._is_bar():
+            self.setFixedSize(WIDGET_DOCK_BAR_WIDTH, self._size)
+        else:
+            total_width = self._size * (1 + BAR_STRIP_MULTIPLIER)
+            self.setFixedSize(total_width, self._size)
+        self._dock(y)
+
+    def _dock(self, y: int | None = None) -> None:
+        """Pin the right edge to the screen edge; clamp y on screen."""
         screen = QApplication.primaryScreen()
-        if screen:
-            geometry = screen.availableGeometry()
-            x = geometry.width() - self.width() - 20
-            y = 80
-            self.move(x, y)
-
-    def _ensure_on_screen(self) -> None:
-        """Ensure widget stays within screen boundaries."""
-        screen = QApplication.primaryScreen()
-        if screen:
-            geometry = screen.availableGeometry()
-            pos = self.pos()
-            new_x = pos.x()
-            new_y = pos.y()
-
-            if new_x + self.width() > geometry.width():
-                new_x = geometry.width() - self.width() - 10
-            if new_y + self._size > geometry.height():
-                new_y = geometry.height() - self._size - 10
-            if new_x < 0:
-                new_x = 10
-            if new_y < 0:
-                new_y = 10
-
-            if new_x != pos.x() or new_y != pos.y():
-                self.move(new_x, new_y)
+        if screen is None:
+            return
+        geometry = screen.availableGeometry()
+        if y is None:
+            y = self.y()
+        y = max(geometry.y(), min(y, geometry.y() + geometry.height() - self.height()))
+        self.move(geometry.x() + geometry.width() - self.width(), y)
 
     def set_size(self, size_key: str) -> None:
-        """Change widget size, keeping the CIRCLE position stable."""
+        """Change widget size; stays docked at the same y."""
         if size_key in WIDGET_SIZES:
-            # Preserve the circle's right edge before resize
-            old_circle_right = self.x() + self.width()
             self._size_key = size_key
             self._size = WIDGET_SIZES[size_key]
             self._thickness_scale = THICKNESS_SCALE.get(size_key, 1.0)
-            total_width = self._size * (1 + BAR_STRIP_MULTIPLIER)
-            self.setFixedSize(total_width, self._size)
-            # Re-anchor: new x = old_right - new_total_width
-            self.move(old_circle_right - total_width, self.y())
+            self._apply_geometry()
             self._init_visualizers()
-            self._ensure_on_screen()
             self.update()
+
+    # ── Dock state ────────────────────────────────────────────────────
+
+    @property
+    def collapsed(self) -> bool:
+        return self._collapsed
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        """Hide to / restore from the thin edge bar."""
+        if collapsed == self._collapsed:
+            return
+        self._collapsed = collapsed
+        self._hover_expanded = False
+        self._apply_geometry()
+        self.update()
+        self.collapsed_changed.emit(collapsed)
+
+    def _set_hover_expanded(self, expanded: bool) -> None:
+        if not self._collapsed or expanded == self._hover_expanded:
+            return
+        self._hover_expanded = expanded
+        self._apply_geometry()
+        self.update()
 
     def _get_scaled_thickness(self, base_thickness: float) -> float:
         """Get thickness scaled by widget size."""
@@ -481,9 +500,13 @@ class FloatingWidget(QWidget):
         self.update()
 
     def paintEvent(self, event: QPaintEvent) -> None:
-        """Draw the bar strip + circle widget."""
+        """Draw the bar strip + circle widget, or the collapsed edge bar."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        if self._is_bar():
+            self._draw_dock_bar(painter)
+            return
 
         # Circle is right-anchored within bounding rect
         circle_size = self._size
@@ -497,6 +520,8 @@ class FloatingWidget(QWidget):
         # gets live audio feedback in both modalities.
         if self._state in (STATE_RECORDING, STATE_COMMAND):
             self._draw_bar_strip(painter, circle_size)
+
+        self._draw_dock_plate(painter, circle_size)
 
         # Circle background + border
         self._draw_background(painter, center, radius)
@@ -515,6 +540,30 @@ class FloatingWidget(QWidget):
         # Error flash overlay (any state)
         if self._error_flash_alpha > 0:
             self._draw_error_flash(painter, center, radius)
+
+    def _edge_tab_path(self, left: float, width: float, radius: float) -> QPainterPath:
+        """Rounded rect whose right corners run off the widget edge, so it
+        reads as a tab attached flat to the screen edge."""
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(left, 0, width + radius, self.height()), radius, radius)
+        return path
+
+    def _draw_dock_plate(self, painter: QPainter, circle_size: int) -> None:
+        """Dark plate behind the circle, flat against the screen edge."""
+        color = QColor(COLOR_BG_DARK)
+        color.setAlphaF(0.55)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        left = self.width() - circle_size
+        painter.drawPath(self._edge_tab_path(left, circle_size, circle_size / 2))
+
+    def _draw_dock_bar(self, painter: QPainter) -> None:
+        """Collapsed state: thin bar in the state colour on the screen edge."""
+        color = self._get_state_color()
+        color.setAlphaF(0.9)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        painter.drawPath(self._edge_tab_path(0, self.width(), self.width() / 2))
 
     def _draw_bar_strip(self, painter: QPainter, circle_size: int) -> None:
         """Render rolling 5-second volume strip extending LEFT of the circle.
@@ -790,21 +839,31 @@ class FloatingWidget(QWidget):
         self._audio_level = clamp(level)
 
     def enterEvent(self, event: QEnterEvent) -> None:
-        """Handle mouse enter (tooltip disabled - may use for onboarding later)."""
-        # if self._state == STATE_IDLE:
-        #     self._tooltip.set_text("Voice Input", "Click to Record")
-        #     widget_center = self.mapToGlobal(QPoint(self._size // 2, self._size // 2))
-        #     self._tooltip.show_at(widget_center, self._size)
-        # elif self._state == STATE_RECORDING:
-        #     self._tooltip.set_text("Recording", "Click to Transcribe")
-        #     widget_center = self.mapToGlobal(QPoint(self._size // 2, self._size // 2))
-        #     self._tooltip.show_at(widget_center, self._size)
+        """Hovering the collapsed bar expands the widget."""
         super().enterEvent(event)
+        self._set_hover_expanded(True)
 
     def leaveEvent(self, event) -> None:
-        """Handle mouse leave (tooltip disabled)."""
-        # self._tooltip.hide()
+        """Leaving a hover-expanded widget collapses it again."""
         super().leaveEvent(event)
+        if not self._menu_open:
+            self._set_hover_expanded(False)
+
+    def contextMenuEvent(self, event) -> None:
+        """Right-click: Hide/Show (collapse to bar) and Disable."""
+        menu = QMenu(self)
+        menu.addAction(
+            "Show" if self._collapsed else "Hide",
+            lambda: self.set_collapsed(not self._collapsed),
+        )
+        menu.addAction("Disable", self.disable_requested.emit)
+        self._menu_open = True
+        try:
+            menu.exec(event.globalPos())
+        finally:
+            self._menu_open = False
+        if not self.underMouse():
+            self._set_hover_expanded(False)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Handle mouse press."""
@@ -822,8 +881,7 @@ class FloatingWidget(QWidget):
             self._total_drag_distance = abs(delta.x()) + abs(delta.y())
 
             if self._drag_start_widget_pos:
-                new_pos = self._drag_start_widget_pos + delta
-                self.move(new_pos)
+                self._dock(self._drag_start_widget_pos.y() + delta.y())
             event.accept()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
@@ -843,13 +901,5 @@ class FloatingWidget(QWidget):
         return (pos.x(), pos.y())
 
     def restore_position(self, position: tuple[int, int] | None) -> None:
-        """Restore saved position, clamping to screen bounds.
-
-        Saved positions from the pre-bar-strip layout assume a circle-only
-        widget. After upgrade, the widget is wider, so a saved x near the
-        screen's right edge can leave the new widget partly or fully
-        off-screen. Always re-clamp via _ensure_on_screen.
-        """
-        if position:
-            self.move(position[0], position[1])
-        self._ensure_on_screen()
+        """Restore saved y (x is always the screen edge), clamped on screen."""
+        self._dock(position[1] if position else None)

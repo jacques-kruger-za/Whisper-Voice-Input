@@ -114,20 +114,21 @@ def test_widget_set_size():
         "set_size should resize the widened bounding box"
     print("  ✓ Calls setFixedSize() with widened bounding box")
 
-    # Check it keeps the circle anchored after resize
-    assert "old_circle_right = self.x() + self.width()" in content, \
-        "set_size should preserve the circle anchor before resizing"
-    assert "self.move(old_circle_right - total_width, self.y())" in content, \
-        "set_size should restore the circle anchor after resizing"
-    print("  ✓ Preserves the circle anchor while resizing")
+    # Check it re-docks to the screen edge after resize
+    assert "def _dock(self, y: int | None = None)" in content, \
+        "widget should have a _dock method pinning x to the screen edge"
+    assert "self._apply_geometry()" in content, \
+        "set_size should re-apply geometry (size + dock)"
+    print("  ✓ Re-docks to the screen edge after resizing")
 
     # Check it re-initializes visualizers
     assert "_init_visualizers()" in content, "set_size should re-initialize visualizers"
     print("  ✓ Re-initializes visualizers")
 
-    # Check it ensures widget stays on screen
-    assert "_ensure_on_screen()" in content, "set_size should ensure widget stays on screen"
-    print("  ✓ Calls _ensure_on_screen()")
+    # Check the dock clamps y on screen
+    assert "geometry.y() + geometry.height() - self.height()" in content, \
+        "_dock should clamp y within the available screen geometry"
+    print("  ✓ Dock clamps y on screen")
 
     return True
 

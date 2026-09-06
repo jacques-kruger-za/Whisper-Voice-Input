@@ -2,8 +2,8 @@
 project: Whisper-Voice-Input
 status: active
 last_updated: 2026-09-07
-current_focus: "Revived 2026-09-07 after a 3-month gap; streaming preview persistence fixed, docs and repo state refreshed"
-next_step: "Issue #1 dock widget + hide-to-bar (largest visible UI gap), then custom-vocab alias replacement"
+current_focus: "v1.3.0: widget now docks to the right screen edge with hide-to-bar (issue #1); awaiting Jacques visual sign-off"
+next_step: "Jacques eyeballs the docked widget; then custom-vocab alias replacement"
 blockers: none
 key_decisions:
   - "2026-05-03: preview-and-finalize streaming (full transcribe at VAD silence) over LocalAgreement word commits; latter lost text"
@@ -11,10 +11,12 @@ key_decisions:
   - "2026-05-26: language list locked to English + Afrikaans; only languages in use, stops Whisper weighing others"
   - "2026-05-26: preview panel anchored bottom-right of screen, independent of the widget position"
   - "2026-09-07: streamer carries a generation counter; rounds that started before finalize/stop are discarded"
+  - "2026-09-07: widget docks to the right screen edge (x pinned, y free); hide = thin bar that expands on hover"
 recent_milestones:
   - "2026-05-03: v1.1.0 — voice commands, vocabulary, visual state redesign, streaming"
   - "2026-05-26: v1.2.0 — language lock, bottom-right upward-growing preview panel"
   - "2026-09-07: autostart registers run.vbs; preview no longer persists after commit"
+  - "2026-09-07: issue #1 dock widget + hide-to-bar; PRs #8 #9 merged; issues #2 #3 #4 closed"
 ---
 
 # Whisper-Voice-Input — Project Overview
@@ -52,6 +54,7 @@ For *future* work, see `ROADMAP.md` (sequenced) and `BACKLOG.md` (raw inbox).
 
 ## Work Log
 
+- **2026-09-07** — Dock widget + hide-to-bar, issue #1; CI smoke workflow (PR #8) and README ops review (PR #9) merged; repo pruned of stale branches
 - **2026-09-07** — Fix streaming preview persisting after finalize/stop (`690e5f8`); autostart registers `run.vbs` (`e0d3e42`)
 - **v1.2.0** — Language list locked to English + Afrikaans (`2779613`); preview panel bottom-right, upward-growing 3 lines (`158bc91`)
 - **v1.1.0** — Bump version + roadmap reflects shipped streaming (`781d368`)

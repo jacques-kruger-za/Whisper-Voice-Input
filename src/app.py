@@ -172,11 +172,16 @@ class VoiceInputApp(QObject):
         logger.debug("Creating floating widget with size: %s", self._settings.widget_size)
         self._widget = FloatingWidget(size_key=self._settings.widget_size)
         self._widget.clicked.connect(self._on_widget_clicked)
+        self._widget.disable_requested.connect(self._hide_widget)
+        self._widget.collapsed_changed.connect(
+            lambda collapsed: setattr(self._settings, 'widget_collapsed', collapsed)
+        )
 
         # Restore widget position
         if self._settings.widget_position:
             logger.debug("Restoring widget position: %s", self._settings.widget_position)
             self._widget.restore_position(self._settings.widget_position)
+        self._widget.set_collapsed(self._settings.widget_collapsed)
 
         # Show/hide based on settings
         if self._settings.show_widget:

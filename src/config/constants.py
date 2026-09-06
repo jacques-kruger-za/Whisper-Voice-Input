@@ -48,6 +48,8 @@ WIDGET_SIZES = {
 }
 DEFAULT_WIDGET_SIZE = "compact"
 WIDGET_OPACITY = 0.95
+WIDGET_DOCK_BAR_WIDTH = 8       # collapsed widget: thin bar on the screen edge
+WIDGET_DOCK_DEFAULT_Y = 80
 
 # Widget colors (matched to _light PNG icons)
 COLOR_BACKGROUND = "#0d1f2d"  # Dark teal blue

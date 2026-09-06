@@ -59,9 +59,12 @@ Earlier S3 prototype had commands and dictation sharing a session via wake-word 
 
 ## Pending Issues
 
-### Issue #1 — Dock widget + hide-to-bar
+### Issue #1 — Dock widget + hide-to-bar — Shipped 2026-09-07 (awaiting visual sign-off)
 
-Dock widget to right edge, slide vertical only. Hide collapses to a thin strip; hover restores. Requires shape change from circle to rectangle. **The largest user-visible gap remaining** — repeatedly hit during the streaming work because the bar-strip layout and now the preview panel both anchor relative to the widget. Docking would make those anchors stable.
+- [x] Widget pinned to the right edge of the primary screen; drag moves it vertically only, y persists.
+- [x] Dark dock plate behind the circle runs flat into the screen edge so it reads as an attached tab. Bar strip still extends left during recording.
+- [x] Right-click on the widget: **Hide** / **Show** (collapse to an 8 px state-coloured bar on the edge, expands on hover) and **Disable** (same as tray Hide Widget).
+- [x] Widget size applies to both the expanded shape and the bar. Collapsed state persists in settings.
 
 ### Issue #5 — Clipboard history in tray
 
@@ -136,6 +139,6 @@ Windows-2026 styling, light/dark system theme adaptation. *We just refactored se
 | v1.0.1 | Shipped | Stability fixes, recovery mechanisms, language detection |
 | v1.1.0 | Shipped 2026-05-03 | Voice commands & vocabulary (issue #2), visual state redesign (issue #2), preview-and-finalize streaming (issue #4), separate command hotkey, retired callout (issue #3), VAD lifecycle |
 | v1.2.0 | Shipped 2026-05-26 | Language list locked to English + Afrikaans, bottom-right preview panel, autostart fix |
-| v1.3.0 | Next | Issue #1 (dock + hide-to-bar), custom-vocab alias replacement, MVP polish (onboarding, smart errors) |
+| v1.3.0 | In progress | ~~Issue #1 (dock + hide-to-bar)~~ shipped 2026-09-07; custom-vocab alias replacement, MVP polish (onboarding, smart errors) |
 | v1.4.0 | Planned | Issue #5 (clipboard history), modern settings UI (issue #6), windows installer, auto-update |
 | v2.0.0 | Aspirational | Per-app shortcut profiles, snippet expansion, cross-platform |

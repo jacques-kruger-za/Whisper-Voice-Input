@@ -44,7 +44,8 @@ class Settings:
             "openai_api_key": "",
             "start_with_windows": False,
             "show_widget": True,
-            "widget_position": None,  # None = top-right
+            "widget_position": None,  # None = top-right; x is ignored, widget docks right
+            "widget_collapsed": False,
             "widget_size": DEFAULT_WIDGET_SIZE,
             "first_run": True,
             "custom_vocabulary": [],
@@ -193,6 +194,15 @@ class Settings:
     @widget_position.setter
     def widget_position(self, value: tuple[int, int] | None) -> None:
         self.set("widget_position", list(value) if value else None)
+
+    @property
+    def widget_collapsed(self) -> bool:
+        """Widget hidden to a thin bar on the screen edge."""
+        return bool(self._settings.get("widget_collapsed", False))
+
+    @widget_collapsed.setter
+    def widget_collapsed(self, value: bool) -> None:
+        self.set("widget_collapsed", bool(value))
 
     @property
     def widget_size(self) -> str:
