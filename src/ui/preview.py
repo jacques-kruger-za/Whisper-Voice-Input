@@ -17,6 +17,7 @@ Visual identity:
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QPropertyAnimation, QRectF, QPoint
+from PyQt6.QtGui import QGuiApplication, QPalette
 from PyQt6.QtGui import (
     QColor, QPainter, QPaintEvent, QPainterPath, QFont, QFontMetrics,
     QLinearGradient, QPen,
@@ -34,8 +35,11 @@ PREVIEW_FONT_SIZE_PT = 11
 PREVIEW_PADDING_PX = 12
 PREVIEW_LINE_SPACING_PX = 2        # extra px between wrapped lines
 PREVIEW_BORDER_RADIUS = 10
-PREVIEW_BG_ALPHA = 200             # 0..255 — translucent
+PREVIEW_BACKGROUND = False         # ponytail: flag, not a setting — trial of bare text
+PREVIEW_BG_ALPHA = 200             # 0..255 — translucent (only if PREVIEW_BACKGROUND)
 PREVIEW_TEXT_ALPHA = 230
+PREVIEW_TEXT_LIGHT_MODE = (70, 70, 75)       # dark grey on a light desktop
+PREVIEW_TEXT_DARK_MODE = (200, 200, 205)     # light grey on a dark desktop
 PREVIEW_VISIBLE_LINES = 3          # lines shown at full opacity
 PREVIEW_FADE_LINES = 2             # extra lines rendered above, fading out
 PREVIEW_FADE_OUT_MS = 600          # length of the disappear animation
@@ -169,6 +173,20 @@ class StreamingPreviewWindow(QWidget):
             lines.append(current)
         return lines
 
+    @staticmethod
+    def _system_is_dark() -> bool:
+        scheme = QGuiApplication.styleHints().colorScheme()
+        if scheme == Qt.ColorScheme.Dark:
+            return True
+        if scheme == Qt.ColorScheme.Light:
+            return False
+        return QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
+
+    def _text_color(self) -> QColor:
+        if PREVIEW_BACKGROUND:
+            return QColor(225, 230, 240)
+        return QColor(*(PREVIEW_TEXT_DARK_MODE if self._system_is_dark() else PREVIEW_TEXT_LIGHT_MODE))
+
     def _line_height(self) -> int:
         return QFontMetrics(self._font()).height() + PREVIEW_LINE_SPACING_PX
 
@@ -202,19 +220,17 @@ class StreamingPreviewWindow(QWidget):
 
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
 
-        # Rounded translucent background
         bg = QColor(20, 22, 28)
         bg.setAlpha(PREVIEW_BG_ALPHA)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(bg)
-        painter.drawRoundedRect(rect, PREVIEW_BORDER_RADIUS, PREVIEW_BORDER_RADIUS)
-
-        # Subtle border
-        border = QColor(120, 180, 255)
-        border.setAlpha(60)
-        painter.setPen(QPen(border, 1))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(rect, PREVIEW_BORDER_RADIUS, PREVIEW_BORDER_RADIUS)
+        if PREVIEW_BACKGROUND:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(bg)
+            painter.drawRoundedRect(rect, PREVIEW_BORDER_RADIUS, PREVIEW_BORDER_RADIUS)
+            border = QColor(120, 180, 255)
+            border.setAlpha(60)
+            painter.setPen(QPen(border, 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(rect, PREVIEW_BORDER_RADIUS, PREVIEW_BORDER_RADIUS)
 
         if not self._text:
             return
@@ -236,7 +252,9 @@ class StreamingPreviewWindow(QWidget):
         max_n = self._max_lines_rendered()
         lines = all_lines[-max_n:]
 
-        text_color = QColor(225, 230, 240)
+        text_color = self._text_color()
+        # Bare text needs a whisper of contrast against whatever is behind it.
+        shadow_color = QColor(255, 255, 255) if text_color.lightness() < 128 else QColor(0, 0, 0)
 
         inner_left = PREVIEW_PADDING_PX
         bottom_y = self.height() - PREVIEW_PADDING_PX
@@ -255,6 +273,11 @@ class StreamingPreviewWindow(QWidget):
                 # Linear fade across PREVIEW_FADE_LINES steps.
                 ratio = max(0.0, 1.0 - fade_idx / (PREVIEW_FADE_LINES + 1))
                 alpha = int(PREVIEW_TEXT_ALPHA * ratio)
+            if not PREVIEW_BACKGROUND:
+                s = QColor(shadow_color)
+                s.setAlpha(alpha // 3)
+                painter.setPen(s)
+                painter.drawText(int(inner_left) + 1, int(baseline) + 1, line)
             c = QColor(text_color)
             c.setAlpha(alpha)
             painter.setPen(c)
@@ -262,7 +285,7 @@ class StreamingPreviewWindow(QWidget):
 
         # Top fade gradient: dissolves anything above the visible window.
         # Only paint it when we actually have overflow rendered above.
-        if n > PREVIEW_VISIBLE_LINES:
+        if PREVIEW_BACKGROUND and n > PREVIEW_VISIBLE_LINES:
             fade_h = line_h * PREVIEW_FADE_LINES + PREVIEW_PADDING_PX
             fade_rect = QRectF(rect.left(), rect.top(), rect.width(), fade_h)
             gradient = QLinearGradient(0, fade_rect.top(), 0, fade_rect.bottom())

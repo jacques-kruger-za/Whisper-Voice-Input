@@ -13,7 +13,7 @@ from collections import deque
 from PyQt6.QtWidgets import QWidget, QApplication, QLabel, QVBoxLayout, QMenu
 from PyQt6.QtCore import (
     Qt, QPoint, QTimer, pyqtSignal, QRect, QRectF, QPointF,
-    QPropertyAnimation, QEasingCurve,
+    QVariantAnimation, QEasingCurve,
 )
 from PyQt6.QtGui import (
     QPainter, QColor, QPen, QBrush, QRadialGradient,
@@ -66,6 +66,8 @@ from ..config.constants import (
     WIDGET_DOCK_BAR_WIDTH,
     WIDGET_DOCK_DEFAULT_Y,
     WIDGET_DOCK_ANIM_MS,
+    WIDGET_DOCK_GLOW_PX,
+    WIDGET_DOCK_LEAVE_DELAY_MS,
     STATE_IDLE,
     STATE_RECORDING,
     STATE_PROCESSING,
@@ -293,7 +295,14 @@ class FloatingWidget(QWidget):
         self._collapsed = False
         self._hover_expanded = False
         self._menu_open = False
-        self._dock_anim: QPropertyAnimation | None = None
+        # _slide: 1 = circle fully out of the edge, 0 = retreated into it.
+        # The window is resized once per transition; the slide is painted.
+        self._slide = 1.0
+        self._dock_anim: QVariantAnimation | None = None
+        self._leave_timer = QTimer(self)
+        self._leave_timer.setSingleShot(True)
+        self._leave_timer.setInterval(WIDGET_DOCK_LEAVE_DELAY_MS)
+        self._leave_timer.timeout.connect(self._on_leave_timeout)
 
         # Drag handling (vertical only — x is pinned to the screen edge)
         self._drag_start_pos: QPoint | None = None
@@ -393,30 +402,64 @@ class FloatingWidget(QWidget):
         screen = QApplication.primaryScreen()
         geometry = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
         total_width = self._size * (1 + BAR_STRIP_MULTIPLIER)
-        width = WIDGET_DOCK_BAR_WIDTH if self._is_bar() else total_width
+        width = self._bar_window_width() if self._is_bar() else total_width
         if y is None:
             y = self.y()
         y = max(geometry.y(), min(y, geometry.y() + geometry.height() - self._size))
         return QRect(geometry.x() + geometry.width() - width, y, width, self._size)
 
+    @staticmethod
+    def _bar_window_width() -> int:
+        """Collapsed window: the bar plus room to its left for the glow."""
+        return WIDGET_DOCK_BAR_WIDTH + WIDGET_DOCK_GLOW_PX
+
     def _apply_geometry(self, y: int | None = None, animate: bool = False) -> None:
-        """Move to the target rect; optionally slide there so the circle
-        appears to emerge from / retreat into the screen edge."""
+        """Move to the target rect. Animated: the window is resized ONCE
+        (grow before sliding in, shrink after sliding out) and the circle
+        slides in paint — resizing a translucent window every frame stutters.
+        """
         target = self._target_rect(y)
+        self._stop_slide()
+        if not (animate and self.isVisible()):
+            self._slide = 0.0 if self._is_bar() else 1.0
+            self.setGeometry(target)
+            self.update()
+            return
+        if self._is_bar():
+            self._animate_slide(0.0, then=lambda: self.setGeometry(target))
+        else:
+            self.setGeometry(target)
+            self._animate_slide(1.0)
+
+    def _stop_slide(self) -> None:
         if self._dock_anim is not None:
             self._dock_anim.stop()
             self._dock_anim = None
-        if animate and self.isVisible() and target != self.geometry():
-            anim = QPropertyAnimation(self, b"geometry")
-            anim.setDuration(WIDGET_DOCK_ANIM_MS)
-            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-            anim.setStartValue(self.geometry())
-            anim.setEndValue(target)
-            anim.finished.connect(self.update)
-            anim.start()
-            self._dock_anim = anim
-        else:
-            self.setGeometry(target)
+
+    def _animate_slide(self, end: float, then=None) -> None:
+        """Ease _slide from its current value to `end`; duration scales
+        with the distance so a reversed half-slide is proportionally short."""
+        start = self._slide
+        anim = QVariantAnimation(self)
+        anim.setDuration(max(1, int(WIDGET_DOCK_ANIM_MS * abs(end - start))))
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.setStartValue(float(start))
+        anim.setEndValue(float(end))
+
+        def _step(v):
+            self._slide = float(v)
+            self.update()
+
+        def _done():
+            self._dock_anim = None
+            if then is not None:
+                then()
+            self.update()
+
+        anim.valueChanged.connect(_step)
+        anim.finished.connect(_done)
+        anim.start()
+        self._dock_anim = anim
 
     def _dock(self, y: int | None = None) -> None:
         """Snap to the screen edge at y (drag / restore)."""
@@ -524,11 +567,16 @@ class FloatingWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Geometry, not state, decides: mid-slide the circle is clipped by
-        # the widget rect so it emerges from / retreats into the edge.
-        if self.width() <= WIDGET_DOCK_BAR_WIDTH:
+        if self.width() <= self._bar_window_width():
             self._draw_dock_bar(painter)
             return
+
+        # Mid-slide: the bar shows at the edge while the circle (and
+        # everything left of it) is translated toward the edge and clipped
+        # by the window rect, so it emerges from / retreats into the edge.
+        if self._slide < 1.0:
+            self._draw_dock_bar(painter)
+            painter.translate((1.0 - self._slide) * self._size, 0)
 
         # Circle is right-anchored within bounding rect
         circle_size = self._size
@@ -580,12 +628,33 @@ class FloatingWidget(QWidget):
         painter.drawPath(self._edge_tab_path(left, circle_size, circle_size / 2))
 
     def _draw_dock_bar(self, painter: QPainter) -> None:
-        """Collapsed state: thin bar in the state colour on the screen edge."""
+        """Collapsed state: thin bar in the state colour on the screen edge.
+        While recording / processing it breathes and glows leftward so the
+        user can see it is working without expanding it."""
         color = self._get_state_color()
-        color.setAlphaF(0.9)
+        bar_left = self.width() - WIDGET_DOCK_BAR_WIDTH
         painter.setPen(Qt.PenStyle.NoPen)
+
+        busy = self._state in (STATE_RECORDING, STATE_COMMAND, STATE_PROCESSING)
+        if busy:
+            phase = self._yellow_pulse_phase if self._state == STATE_PROCESSING else self._red_dot_phase
+            pulse = 0.5 - 0.5 * math.cos(phase * 2 * math.pi)
+            intensity = clamp(0.35 + 0.35 * pulse + 0.5 * self._smoothed_audio)
+            glow = QLinearGradient(bar_left - WIDGET_DOCK_GLOW_PX, 0, bar_left, 0)
+            clear = QColor(color)
+            clear.setAlphaF(0.0)
+            edge = QColor(color)
+            edge.setAlphaF(0.7 * intensity)
+            glow.setColorAt(0.0, clear)
+            glow.setColorAt(1.0, edge)
+            painter.setBrush(glow)
+            painter.drawRect(QRectF(bar_left - WIDGET_DOCK_GLOW_PX, 0, WIDGET_DOCK_GLOW_PX, self.height()))
+            color.setAlphaF(0.6 + 0.4 * pulse)
+        else:
+            color.setAlphaF(0.9)
+
         painter.setBrush(color)
-        painter.drawPath(self._edge_tab_path(0, self.width(), self.width() / 2))
+        painter.drawPath(self._edge_tab_path(bar_left, WIDGET_DOCK_BAR_WIDTH, WIDGET_DOCK_BAR_WIDTH / 2))
 
     def _draw_bar_strip(self, painter: QPainter, circle_size: int) -> None:
         """Render rolling 5-second volume strip extending LEFT of the circle.
@@ -863,12 +932,18 @@ class FloatingWidget(QWidget):
     def enterEvent(self, event: QEnterEvent) -> None:
         """Hovering the collapsed bar expands the widget."""
         super().enterEvent(event)
+        self._leave_timer.stop()
         self._set_hover_expanded(True)
 
     def leaveEvent(self, event) -> None:
-        """Leaving a hover-expanded widget collapses it again."""
+        """Leaving a hover-expanded widget collapses it after a short
+        grace period, so grazing the edge does not make it flap."""
         super().leaveEvent(event)
         if not self._menu_open:
+            self._leave_timer.start()
+
+    def _on_leave_timeout(self) -> None:
+        if not self._menu_open and not self.underMouse():
             self._set_hover_expanded(False)
 
     def contextMenuEvent(self, event) -> None:
@@ -885,15 +960,13 @@ class FloatingWidget(QWidget):
         finally:
             self._menu_open = False
         if not self.underMouse():
-            self._set_hover_expanded(False)
+            self._leave_timer.start()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Handle mouse press."""
         # self._tooltip.hide()
         if event.button() == Qt.MouseButton.LeftButton:
-            if self._dock_anim is not None:
-                self._dock_anim.stop()
-                self._dock_anim = None
+            self._apply_geometry()  # settle any slide before dragging
             self._drag_start_pos = event.globalPosition().toPoint()
             self._drag_start_widget_pos = self.pos()
             self._total_drag_distance = 0

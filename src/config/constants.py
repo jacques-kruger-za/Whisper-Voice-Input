@@ -51,6 +51,8 @@ WIDGET_OPACITY = 0.95
 WIDGET_DOCK_BAR_WIDTH = 8       # collapsed widget: thin bar on the screen edge
 WIDGET_DOCK_DEFAULT_Y = 80
 WIDGET_DOCK_ANIM_MS = 160       # expand / collapse slide duration
+WIDGET_DOCK_GLOW_PX = 14        # room left of the collapsed bar for the recording glow
+WIDGET_DOCK_LEAVE_DELAY_MS = 250  # hover grace before a hover-expanded widget collapses
 
 # Widget colors (matched to _light PNG icons)
 COLOR_BACKGROUND = "#0d1f2d"  # Dark teal blue

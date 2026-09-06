@@ -12,11 +12,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PyQt6.QtCore import QPoint  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-from src.config.constants import WIDGET_DOCK_BAR_WIDTH, WIDGET_SIZES  # noqa: E402
+from src.config.constants import STATE_RECORDING, WIDGET_DOCK_BAR_WIDTH, WIDGET_DOCK_GLOW_PX, WIDGET_SIZES  # noqa: E402
 from src.ui.widget import BAR_STRIP_MULTIPLIER, FloatingWidget  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 EDGE = app.primaryScreen().availableGeometry()
+BAR_WINDOW = WIDGET_DOCK_BAR_WIDTH + WIDGET_DOCK_GLOW_PX
 RIGHT = EDGE.x() + EDGE.width()
 
 
@@ -47,7 +48,7 @@ def test_collapse_hover_and_resize():
     w.collapsed_changed.connect(seen.append)
 
     w.set_collapsed(True)
-    assert w.width() == WIDGET_DOCK_BAR_WIDTH and _right_edge(w) == RIGHT
+    assert w.width() == BAR_WINDOW and _right_edge(w) == RIGHT
     assert seen == [True]
     assert not w.grab().isNull()            # bar paints
 
@@ -57,11 +58,11 @@ def test_collapse_hover_and_resize():
     assert not w.grab().isNull()            # plate + circle paint
 
     w._set_hover_expanded(False)            # what leaveEvent does
-    assert w.width() == WIDGET_DOCK_BAR_WIDTH
+    assert w.width() == BAR_WINDOW
 
     w.set_size("large")                     # size applies to the bar shape too
     assert w.height() == WIDGET_SIZES["large"]
-    assert w.width() == WIDGET_DOCK_BAR_WIDTH
+    assert w.width() == BAR_WINDOW
     assert _right_edge(w) == RIGHT
 
     w.set_collapsed(False)
@@ -75,15 +76,26 @@ def test_collapse_animates_to_target_when_visible():
     w.show()
     full = w.width()
     w.set_collapsed(True)
-    assert w.width() > WIDGET_DOCK_BAR_WIDTH        # still sliding
+    assert w.width() == full and w._slide == 1.0   # window shrinks only after the slide
     loop = QEventLoop()
     QTimer.singleShot(600, loop.quit)
     loop.exec()
-    assert w.width() == WIDGET_DOCK_BAR_WIDTH and _right_edge(w) == RIGHT
+    assert w._slide == 0.0
+    assert w.width() == BAR_WINDOW and _right_edge(w) == RIGHT
+    assert not w.grab().isNull()
     w.set_collapsed(False)
+    assert w.width() == full and w._slide < 1.0    # window grows first, then slides in
+    assert not w.grab().isNull()                   # mid-slide paint
     QTimer.singleShot(600, loop.quit)
     loop.exec()
-    assert w.width() == full and _right_edge(w) == RIGHT
+    assert w._slide == 1.0 and _right_edge(w) == RIGHT
+
+    # Recording glow paints on the collapsed bar
+    w.set_collapsed(True)
+    QTimer.singleShot(600, loop.quit)
+    loop.exec()
+    w.set_state(STATE_RECORDING)
+    assert not w.grab().isNull()
 
 
 if __name__ == "__main__":
