@@ -98,7 +98,21 @@ def test_collapse_animates_to_target_when_visible():
     assert not w.grab().isNull()
 
 
+def test_hover_zone_is_only_the_visible_part():
+    w = FloatingWidget("compact")
+    w.set_collapsed(True)
+    assert not w._in_hover_zone(0)                        # glow margin: not hovered
+    assert w._in_hover_zone(w.width() - 1)                # the pill: hovered
+    w._track_hover(0)
+    assert w.width() == BAR_WINDOW                        # did not expand
+    w._track_hover(w.width() - 1)
+    assert w.width() > BAR_WINDOW                         # expanded
+    assert not w._in_hover_zone(0)                        # transparent strip: not hovered
+    assert w._in_hover_zone(w.width() - 1)                # the circle: hovered
+
+
 if __name__ == "__main__":
+    test_hover_zone_is_only_the_visible_part()
     test_collapse_animates_to_target_when_visible()
     test_docks_to_right_edge_and_drags_vertically_only()
     test_collapse_hover_and_resize()

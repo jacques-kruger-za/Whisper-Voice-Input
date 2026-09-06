@@ -575,7 +575,7 @@ class FloatingWidget(QWidget):
         # everything left of it) is translated toward the edge and clipped
         # by the window rect, so it emerges from / retreats into the edge.
         if self._slide < 1.0:
-            self._draw_dock_bar(painter)
+            self._draw_dock_bar(painter, opacity=1.0 - self._slide)
             painter.translate((1.0 - self._slide) * self._size, 0)
 
         # Circle is right-anchored within bounding rect
@@ -627,11 +627,14 @@ class FloatingWidget(QWidget):
         left = self.width() - circle_size
         painter.drawPath(self._edge_tab_path(left, circle_size, circle_size / 2))
 
-    def _draw_dock_bar(self, painter: QPainter) -> None:
+    def _draw_dock_bar(self, painter: QPainter, opacity: float = 1.0) -> None:
         """Collapsed state: thin bar in the state colour on the screen edge.
         While recording / processing it breathes and glows leftward so the
-        user can see it is working without expanding it."""
+        user can see it is working without expanding it. `opacity` lets the
+        bar dissolve while the circle slides out over it."""
         color = self._get_state_color()
+        painter.save()
+        painter.setOpacity(opacity)
         bar_left = self.width() - WIDGET_DOCK_BAR_WIDTH
         painter.setPen(Qt.PenStyle.NoPen)
 
@@ -655,6 +658,7 @@ class FloatingWidget(QWidget):
 
         painter.setBrush(color)
         painter.drawPath(self._edge_tab_path(bar_left, WIDGET_DOCK_BAR_WIDTH, WIDGET_DOCK_BAR_WIDTH / 2))
+        painter.restore()
 
     def _draw_bar_strip(self, painter: QPainter, circle_size: int) -> None:
         """Render rolling 5-second volume strip extending LEFT of the circle.
@@ -929,11 +933,26 @@ class FloatingWidget(QWidget):
         """Update audio level for reactive animations."""
         self._audio_level = clamp(level)
 
+    def _in_hover_zone(self, x: float) -> bool:
+        """The window is wider than what is drawn (glow margin, transparent
+        bar strip). Only the visible pill or circle counts as hovered, so
+        the widget does not expand when the cursor is merely nearby."""
+        visible_w = WIDGET_DOCK_BAR_WIDTH if self.width() <= self._bar_window_width() else self._size
+        return x >= self.width() - visible_w
+
+    def _track_hover(self, x: float) -> None:
+        if not self._collapsed:
+            return
+        if self._in_hover_zone(x):
+            self._leave_timer.stop()
+            self._set_hover_expanded(True)
+        elif self._hover_expanded and not self._leave_timer.isActive():
+            self._leave_timer.start()
+
     def enterEvent(self, event: QEnterEvent) -> None:
-        """Hovering the collapsed bar expands the widget."""
+        """Hovering the visible pill expands the widget."""
         super().enterEvent(event)
-        self._leave_timer.stop()
-        self._set_hover_expanded(True)
+        self._track_hover(event.position().x())
 
     def leaveEvent(self, event) -> None:
         """Leaving a hover-expanded widget collapses it after a short
@@ -973,7 +992,10 @@ class FloatingWidget(QWidget):
             event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        """Handle drag."""
+        """Handle drag; otherwise track whether the cursor is over the
+        visible part of the widget."""
+        if not event.buttons():
+            self._track_hover(event.position().x())
         if event.buttons() == Qt.MouseButton.LeftButton and self._drag_start_pos:
             delta = event.globalPosition().toPoint() - self._drag_start_pos
             self._total_drag_distance = abs(delta.x()) + abs(delta.y())
