@@ -162,7 +162,7 @@ Access settings via:
 | Widget Size | Compact (60px), Medium (80px), Large (100px) |
 | Engine | Local (Faster-Whisper) or API (OpenAI) |
 | Model | tiny, base, small, medium, large-v3 |
-| Language | English (Auto), US, UK, South Africa |
+| Language | English (default), Afrikaans |
 | API Key | Your OpenAI API key (for API engine) |
 | Custom Vocabulary | Bias transcription toward names, products, and jargon |
 | Spoken Punctuation | Convert phrases like "comma" or "new line" while dictating |
