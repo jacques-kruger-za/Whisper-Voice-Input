@@ -119,6 +119,9 @@ class StreamingTranscriber:
         self._stop_event = threading.Event()
         self._paused = False
         self._round = 0
+        # Bumped on finalize/stop. A preview round that started before the
+        # bump is discarded, so a committed utterance is never re-shown.
+        self._gen = 0
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -144,6 +147,7 @@ class StreamingTranscriber:
 
     def stop(self) -> None:
         """Signal worker to exit. Returns within ~500ms."""
+        self._gen += 1
         self._stop_event.set()
         if self._worker:
             self._worker.join(timeout=0.5)
@@ -219,6 +223,11 @@ class StreamingTranscriber:
         clear the preview UI.
         """
         with self._lock:
+            self._gen += 1
+            # The rolling window only holds audio that is about to be
+            # committed; drop it so the next preview round starts fresh.
+            self._chunks.clear()
+            self._buffer_samples = 0
             if not self._utterance_chunks:
                 return ""
             utterance = np.concatenate(self._utterance_chunks)
@@ -277,6 +286,7 @@ class StreamingTranscriber:
             if self._paused:
                 continue
 
+            gen = self._gen
             window = self._snapshot_window()
             if window is None:
                 logger.info("Streaming round skipped: buffer too short")
@@ -306,6 +316,9 @@ class StreamingTranscriber:
 
             if self._stop_event.is_set():
                 break
+            if gen != self._gen:
+                logger.info("Streaming round %d discarded: finalized mid-round", self._round)
+                continue
 
             text = " ".join(getattr(s, "text", "").strip() for s in segments).strip()
             preview = text[:120] + ("..." if len(text) > 120 else "")

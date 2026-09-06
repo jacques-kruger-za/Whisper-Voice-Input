@@ -347,8 +347,11 @@ class VoiceInputApp(QObject):
         end-of-utterance), where we run a fresh full-quality transcribe
         on the whole utterance audio for accuracy.
         """
-        if self._preview_window is not None:
-            self._preview_window.set_text(raw_text)
+        # A round can land (queued) after teardown; showing it would leave
+        # the panel up with nothing left to fade it.
+        if self._streamer is None or self._preview_window is None:
+            return
+        self._preview_window.set_text(raw_text)
 
     def _finalize_streaming_utterance(self) -> None:
         """End-of-utterance (mid-session, silence-detected): run final
@@ -1123,6 +1126,8 @@ class VoiceInputApp(QObject):
             except Exception as e:
                 logger.warning("Error stopping streamer during reset: %s", e)
             self._streamer = None
+        if self._preview_window is not None:
+            self._preview_window.set_text("")
 
         # Hide callout
         self._callout.clear()
