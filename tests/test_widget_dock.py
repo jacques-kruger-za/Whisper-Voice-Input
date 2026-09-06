@@ -69,7 +69,25 @@ def test_collapse_hover_and_resize():
     assert seen == [True, False]
 
 
+def test_collapse_animates_to_target_when_visible():
+    from PyQt6.QtCore import QEventLoop, QTimer
+    w = FloatingWidget("compact")
+    w.show()
+    full = w.width()
+    w.set_collapsed(True)
+    assert w.width() > WIDGET_DOCK_BAR_WIDTH        # still sliding
+    loop = QEventLoop()
+    QTimer.singleShot(600, loop.quit)
+    loop.exec()
+    assert w.width() == WIDGET_DOCK_BAR_WIDTH and _right_edge(w) == RIGHT
+    w.set_collapsed(False)
+    QTimer.singleShot(600, loop.quit)
+    loop.exec()
+    assert w.width() == full and _right_edge(w) == RIGHT
+
+
 if __name__ == "__main__":
+    test_collapse_animates_to_target_when_visible()
     test_docks_to_right_edge_and_drags_vertically_only()
     test_collapse_hover_and_resize()
     print("ok")

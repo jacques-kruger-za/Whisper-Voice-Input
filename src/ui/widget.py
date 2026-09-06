@@ -11,7 +11,10 @@ import random
 import sys
 from collections import deque
 from PyQt6.QtWidgets import QWidget, QApplication, QLabel, QVBoxLayout, QMenu
-from PyQt6.QtCore import Qt, QPoint, QTimer, pyqtSignal, QRectF, QPointF
+from PyQt6.QtCore import (
+    Qt, QPoint, QTimer, pyqtSignal, QRect, QRectF, QPointF,
+    QPropertyAnimation, QEasingCurve,
+)
 from PyQt6.QtGui import (
     QPainter, QColor, QPen, QBrush, QRadialGradient,
     QPainterPath, QPaintEvent, QMouseEvent, QEnterEvent, QFont,
@@ -62,6 +65,7 @@ from ..config.constants import (
     WIDGET_OPACITY,
     WIDGET_DOCK_BAR_WIDTH,
     WIDGET_DOCK_DEFAULT_Y,
+    WIDGET_DOCK_ANIM_MS,
     STATE_IDLE,
     STATE_RECORDING,
     STATE_PROCESSING,
@@ -289,6 +293,7 @@ class FloatingWidget(QWidget):
         self._collapsed = False
         self._hover_expanded = False
         self._menu_open = False
+        self._dock_anim: QPropertyAnimation | None = None
 
         # Drag handling (vertical only — x is pinned to the screen edge)
         self._drag_start_pos: QPoint | None = None
@@ -382,25 +387,40 @@ class FloatingWidget(QWidget):
         """True when rendering as the thin collapsed bar."""
         return self._collapsed and not self._hover_expanded
 
-    def _apply_geometry(self, y: int | None = None) -> None:
-        """Size for the current dock state and pin to the screen edge."""
-        if self._is_bar():
-            self.setFixedSize(WIDGET_DOCK_BAR_WIDTH, self._size)
-        else:
-            total_width = self._size * (1 + BAR_STRIP_MULTIPLIER)
-            self.setFixedSize(total_width, self._size)
-        self._dock(y)
-
-    def _dock(self, y: int | None = None) -> None:
-        """Pin the right edge to the screen edge; clamp y on screen."""
+    def _target_rect(self, y: int | None = None) -> QRect:
+        """Geometry for the current dock state: right edge pinned to the
+        screen edge, y clamped on screen, width = bar or full."""
         screen = QApplication.primaryScreen()
-        if screen is None:
-            return
-        geometry = screen.availableGeometry()
+        geometry = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
+        total_width = self._size * (1 + BAR_STRIP_MULTIPLIER)
+        width = WIDGET_DOCK_BAR_WIDTH if self._is_bar() else total_width
         if y is None:
             y = self.y()
-        y = max(geometry.y(), min(y, geometry.y() + geometry.height() - self.height()))
-        self.move(geometry.x() + geometry.width() - self.width(), y)
+        y = max(geometry.y(), min(y, geometry.y() + geometry.height() - self._size))
+        return QRect(geometry.x() + geometry.width() - width, y, width, self._size)
+
+    def _apply_geometry(self, y: int | None = None, animate: bool = False) -> None:
+        """Move to the target rect; optionally slide there so the circle
+        appears to emerge from / retreat into the screen edge."""
+        target = self._target_rect(y)
+        if self._dock_anim is not None:
+            self._dock_anim.stop()
+            self._dock_anim = None
+        if animate and self.isVisible() and target != self.geometry():
+            anim = QPropertyAnimation(self, b"geometry")
+            anim.setDuration(WIDGET_DOCK_ANIM_MS)
+            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            anim.setStartValue(self.geometry())
+            anim.setEndValue(target)
+            anim.finished.connect(self.update)
+            anim.start()
+            self._dock_anim = anim
+        else:
+            self.setGeometry(target)
+
+    def _dock(self, y: int | None = None) -> None:
+        """Snap to the screen edge at y (drag / restore)."""
+        self._apply_geometry(y)
 
     def set_size(self, size_key: str) -> None:
         """Change widget size; stays docked at the same y."""
@@ -424,7 +444,7 @@ class FloatingWidget(QWidget):
             return
         self._collapsed = collapsed
         self._hover_expanded = False
-        self._apply_geometry()
+        self._apply_geometry(animate=True)
         self.update()
         self.collapsed_changed.emit(collapsed)
 
@@ -432,7 +452,7 @@ class FloatingWidget(QWidget):
         if not self._collapsed or expanded == self._hover_expanded:
             return
         self._hover_expanded = expanded
-        self._apply_geometry()
+        self._apply_geometry(animate=True)
         self.update()
 
     def _get_scaled_thickness(self, base_thickness: float) -> float:
@@ -504,7 +524,9 @@ class FloatingWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        if self._is_bar():
+        # Geometry, not state, decides: mid-slide the circle is clipped by
+        # the widget rect so it emerges from / retreats into the edge.
+        if self.width() <= WIDGET_DOCK_BAR_WIDTH:
             self._draw_dock_bar(painter)
             return
 
@@ -869,6 +891,9 @@ class FloatingWidget(QWidget):
         """Handle mouse press."""
         # self._tooltip.hide()
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._dock_anim is not None:
+                self._dock_anim.stop()
+                self._dock_anim = None
             self._drag_start_pos = event.globalPosition().toPoint()
             self._drag_start_widget_pos = self.pos()
             self._total_drag_distance = 0

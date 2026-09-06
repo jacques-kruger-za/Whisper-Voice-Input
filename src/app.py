@@ -173,9 +173,7 @@ class VoiceInputApp(QObject):
         self._widget = FloatingWidget(size_key=self._settings.widget_size)
         self._widget.clicked.connect(self._on_widget_clicked)
         self._widget.disable_requested.connect(self._hide_widget)
-        self._widget.collapsed_changed.connect(
-            lambda collapsed: setattr(self._settings, 'widget_collapsed', collapsed)
-        )
+        self._widget.collapsed_changed.connect(self._on_widget_collapsed)
 
         # Restore widget position
         if self._settings.widget_position:
@@ -194,6 +192,8 @@ class VoiceInputApp(QObject):
         self._tray.toggle_recording.connect(self._on_tray_toggle)
         self._tray.show_widget.connect(self._show_widget)
         self._tray.hide_widget.connect(self._hide_widget)
+        self._tray.toggle_collapsed.connect(self._toggle_widget_collapsed)
+        self._tray.set_widget_collapsed(self._widget.collapsed)
         self._tray.open_settings.connect(self._open_settings)
         self._tray.reset_state.connect(self._reset_state)
         self._tray.restart_app.connect(self._restart_app)
@@ -1059,6 +1059,7 @@ class VoiceInputApp(QObject):
             self._settings_window.hotkey_changed.connect(self._on_hotkey_changed)
             self._settings_window.command_hotkey_changed.connect(self._on_command_hotkey_changed)
             self._settings_window.widget_size_changed.connect(self._on_widget_size_changed)
+            self._settings_window.widget_collapsed_changed.connect(self._set_widget_collapsed)
 
         # Ensure window is visible and focused
         self._settings_window.showNormal()
@@ -1095,6 +1096,20 @@ class VoiceInputApp(QObject):
         self._command_hotkey_manager.set_hotkey(hotkey)
         self._command_hotkey_manager.start()
         logger.debug("Command hotkey listener restarted")
+
+    def _set_widget_collapsed(self, collapsed: bool) -> None:
+        if self._widget:
+            self._widget.set_collapsed(collapsed)
+
+    def _toggle_widget_collapsed(self) -> None:
+        if self._widget:
+            self._widget.set_collapsed(not self._widget.collapsed)
+
+    def _on_widget_collapsed(self, collapsed: bool) -> None:
+        """Widget collapsed/expanded (any source): persist + sync tray text."""
+        self._settings.widget_collapsed = collapsed
+        if self._tray:
+            self._tray.set_widget_collapsed(collapsed)
 
     def _on_widget_size_changed(self, size_key: str) -> None:
         """Handle widget size change."""

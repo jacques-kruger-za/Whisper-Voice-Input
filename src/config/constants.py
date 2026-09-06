@@ -42,14 +42,15 @@ DEFAULT_ENGINE = ENGINE_LOCAL
 
 # UI constants - Circular widget
 WIDGET_SIZES = {
-    "compact": 60,
-    "medium": 80,
-    "large": 100,
+    "compact": 30,
+    "medium": 40,
+    "large": 50,
 }
 DEFAULT_WIDGET_SIZE = "compact"
 WIDGET_OPACITY = 0.95
 WIDGET_DOCK_BAR_WIDTH = 8       # collapsed widget: thin bar on the screen edge
 WIDGET_DOCK_DEFAULT_Y = 80
+WIDGET_DOCK_ANIM_MS = 160       # expand / collapse slide duration
 
 # Widget colors (matched to _light PNG icons)
 COLOR_BACKGROUND = "#0d1f2d"  # Dark teal blue

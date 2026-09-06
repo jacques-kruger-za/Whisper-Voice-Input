@@ -159,7 +159,7 @@ Access settings via:
 | Setting | Options |
 |---------|---------|
 | Hotkey | Any key + Ctrl/Shift/Alt modifiers |
-| Widget Size | Compact (60px), Medium (80px), Large (100px) |
+| Widget Size | Compact (30px), Medium (40px), Large (50px) |
 | Engine | Local (Faster-Whisper) or API (OpenAI) |
 | Model | tiny, base, small, medium, large-v3 |
 | Language | English (default), Afrikaans |

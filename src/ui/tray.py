@@ -33,6 +33,7 @@ class TrayIcon(QObject):
     toggle_recording = pyqtSignal()
     show_widget = pyqtSignal()
     hide_widget = pyqtSignal()
+    toggle_collapsed = pyqtSignal()
     open_settings = pyqtSignal()
     reset_state = pyqtSignal()
     restart_app = pyqtSignal()
@@ -44,6 +45,7 @@ class TrayIcon(QObject):
         self._tray = QSystemTrayIcon(parent)
         self._state = STATE_IDLE
         self._widget_visible = True
+        self._widget_collapsed = False
         self._setup_icons()
         self._setup_menu()
         self._update_icon()
@@ -74,6 +76,10 @@ class TrayIcon(QObject):
         # Widget visibility
         self._widget_action = self._menu.addAction("Hide Widget")
         self._widget_action.triggered.connect(self._toggle_widget)
+
+        # Collapse to / expand from the screen-edge bar
+        self._collapse_action = self._menu.addAction("Collapse to Edge")
+        self._collapse_action.triggered.connect(self.toggle_collapsed.emit)
 
         # Settings
         settings_action = self._menu.addAction("Settings")
@@ -158,6 +164,11 @@ class TrayIcon(QObject):
             self._widget_action.setText("Hide Widget")
         else:
             self._widget_action.setText("Show Widget")
+
+    def set_widget_collapsed(self, collapsed: bool) -> None:
+        """Update the Collapse/Expand menu text."""
+        self._widget_collapsed = collapsed
+        self._collapse_action.setText("Expand from Edge" if collapsed else "Collapse to Edge")
 
     def show(self) -> None:
         """Show the tray icon."""

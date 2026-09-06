@@ -1,7 +1,7 @@
 """Verification script for widget size functionality.
 
 This script verifies that:
-1. WIDGET_SIZES constants have correct values (60, 80, 100)
+1. WIDGET_SIZES constants have correct values (30, 40, 50)
 2. Settings UI labels match expected sizes
 3. Widget set_size() method correctly applies sizes
 
@@ -37,9 +37,9 @@ def test_widget_sizes_constants():
 
     # Verify each expected size
     expected = {
-        "compact": 60,
-        "medium": 80,
-        "large": 100,
+        "compact": 30,
+        "medium": 40,
+        "large": 50,
     }
 
     for key, expected_val in expected.items():
@@ -60,16 +60,9 @@ def test_settings_ui_labels():
 
     content = read_file('src/ui/settings.py')
 
-    # Check for size_labels dict with correct values
-    expected_labels = [
-        '"compact": "Compact (60px)"',
-        '"medium": "Medium (80px)"',
-        '"large": "Large (100px)"',
-    ]
-
-    for label in expected_labels:
-        assert label in content, f"Missing label: {label}"
-        print(f"  ✓ Found: {label}")
+    # Labels are generated from WIDGET_SIZES so they can never drift
+    assert 'f"{key.title()} ({px}px)"' in content, "size labels should derive from WIDGET_SIZES"
+    print("  ✓ Size labels derive from WIDGET_SIZES")
 
     # Verify WIDGET_SIZES is imported and used
     assert "from ..config import" in content and "WIDGET_SIZES" in content, "WIDGET_SIZES should be imported"
@@ -110,9 +103,9 @@ def test_widget_set_size():
     print("  ✓ Recalculates total widget width for the bar strip")
 
     # Check it resizes using the widened bounding box instead of a square widget
-    assert "self.setFixedSize(total_width, self._size)" in content, \
-        "set_size should resize the widened bounding box"
-    print("  ✓ Calls setFixedSize() with widened bounding box")
+    assert "self.setGeometry(target)" in content, \
+        "widget should apply the docked target geometry"
+    print("  ✓ Applies the docked target geometry")
 
     # Check it re-docks to the screen edge after resize
     assert "def _dock(self, y: int | None = None)" in content, \
@@ -126,7 +119,7 @@ def test_widget_set_size():
     print("  ✓ Re-initializes visualizers")
 
     # Check the dock clamps y on screen
-    assert "geometry.y() + geometry.height() - self.height()" in content, \
+    assert "geometry.y() + geometry.height() - self._size" in content, \
         "_dock should clamp y within the available screen geometry"
     print("  ✓ Dock clamps y on screen")
 
@@ -249,9 +242,9 @@ def main():
         print("  2. Right-click tray icon -> Settings")
         print("  3. Navigate to 'Appearance' section")
         print("  4. Change 'Widget Size' through all options:")
-        print("     - Compact (60px)")
-        print("     - Medium (80px)")
-        print("     - Large (100px)")
+        print("     - Compact (30px)")
+        print("     - Medium (40px)")
+        print("     - Large (50px)")
         print("  5. Click 'Save' after each change")
         print("  6. Verify widget resizes to correct size")
         return 0

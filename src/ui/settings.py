@@ -43,6 +43,7 @@ class SettingsWindow(QDialog):
     hotkey_changed = pyqtSignal(dict)
     command_hotkey_changed = pyqtSignal(dict)
     widget_size_changed = pyqtSignal(str)
+    widget_collapsed_changed = pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -146,14 +147,14 @@ class SettingsWindow(QDialog):
 
         # Widget size selection
         self._widget_size_combo = QComboBox()
-        size_labels = {
-            "compact": "Compact (60px)",
-            "medium": "Medium (80px)",
-            "large": "Large (100px)",
-        }
-        for key in WIDGET_SIZES:
-            self._widget_size_combo.addItem(size_labels.get(key, key), key)
+        for key, px in WIDGET_SIZES.items():
+            self._widget_size_combo.addItem(f"{key.title()} ({px}px)", key)
         layout.addRow("Widget Size:", self._widget_size_combo)
+
+        self._collapse_check = QCheckBox(
+            "Collapsed to a thin bar on the screen edge (hover to expand)"
+        )
+        layout.addRow("Widget:", self._collapse_check)
 
         return group
 
@@ -477,6 +478,7 @@ class SettingsWindow(QDialog):
         # Startup
         self._autostart_check.setChecked(self._settings.start_with_windows)
         self._show_widget_check.setChecked(self._settings.show_widget)
+        self._collapse_check.setChecked(self._settings.widget_collapsed)
 
         # Appearance
         widget_size = self._settings.widget_size
@@ -718,6 +720,9 @@ class SettingsWindow(QDialog):
         # Startup
         self._settings.start_with_windows = self._autostart_check.isChecked()
         self._settings.show_widget = self._show_widget_check.isChecked()
+        old_collapsed = self._settings.widget_collapsed
+        new_collapsed = self._collapse_check.isChecked()
+        self._settings.widget_collapsed = new_collapsed
 
         # Appearance
         old_widget_size = self._settings.widget_size
@@ -759,6 +764,8 @@ class SettingsWindow(QDialog):
             self.command_hotkey_changed.emit(self._current_command_hotkey)
         if new_widget_size != old_widget_size:
             self.widget_size_changed.emit(new_widget_size)
+        if new_collapsed != old_collapsed:
+            self.widget_collapsed_changed.emit(new_collapsed)
 
         self.accept()
 
