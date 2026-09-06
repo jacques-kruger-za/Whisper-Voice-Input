@@ -1,60 +1,61 @@
-"""Streaming preview window — translucent text panel in the bottom-right.
+"""Streaming preview — text that streams out of the docked widget.
 
 A glimpse of what Whisper is hearing right now. Not interactive. Updates per
-streaming round; clears (with fade) when an utterance finalizes and lands in
-the user's editor.
+streaming round; fades when an utterance finalizes and lands in the editor.
 
 Visual identity:
-- Fixed position: bottom-right of the primary screen
-- Fixed width: one fifth of the screen width
-- Text wraps; panel grows UPWARDS as more lines arrive
-- Three lines are shown at full opacity. Anything above that fades out at
-  the top edge so older content dissolves rather than cuts off
-- Frameless, no border (subtle), no focus, doesn't steal click events
-- Position is independent of the floating recorder widget
+- Anchored to the widget: right edge sits just left of the widget's window,
+  vertically centred on it. Text is right-aligned so the newest words are
+  nearest the widget and the block grows LEFT as more arrives, up to a cap
+  of one fifth of the screen width, then wraps.
+- PREVIEW_VISIBLE_LINES at full opacity; one older line above fades out.
+- No panel. A very faint glow in the widget's active colour sits behind the
+  text, strongest at the widget side and dissolving leftward.
+- Frameless, no focus, click-through.
+- Falls back to the bottom-right of the screen when the widget is hidden.
 """
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QPropertyAnimation, QRectF, QPoint
-from PyQt6.QtGui import QGuiApplication, QPalette
+from PyQt6.QtCore import Qt, QPropertyAnimation, QRectF, QRect
 from PyQt6.QtGui import (
-    QColor, QPainter, QPaintEvent, QPainterPath, QFont, QFontMetrics,
-    QLinearGradient, QPen,
+    QColor, QPainter, QPaintEvent, QFont, QFontMetrics, QLinearGradient,
+    QGuiApplication, QPalette,
 )
 from PyQt6.QtWidgets import QWidget, QApplication
 
 from ..config.logging_config import get_logger
+from .styles import COLOR_WIDGET_RECORDING
 
 logger = get_logger(__name__)
 
 
 # Visual tuning — kept module-level so they're easy to find when tuning.
-PREVIEW_WIDTH_FRACTION = 0.20      # one fifth of the screen
+PREVIEW_WIDTH_FRACTION = 0.20      # cap: one fifth of the screen
 PREVIEW_FONT_SIZE_PT = 11
-PREVIEW_PADDING_PX = 12
+PREVIEW_PADDING_PX = 10
 PREVIEW_LINE_SPACING_PX = 2        # extra px between wrapped lines
-PREVIEW_BORDER_RADIUS = 10
-PREVIEW_BACKGROUND = False         # ponytail: flag, not a setting — trial of bare text
-PREVIEW_BG_ALPHA = 200             # 0..255 — translucent (only if PREVIEW_BACKGROUND)
+PREVIEW_GAP_PX = 6                 # gap between text block and the widget
 PREVIEW_TEXT_ALPHA = 230
+PREVIEW_VISIBLE_LINES = 2          # lines shown at full opacity
+PREVIEW_FADE_LINES = 1             # older lines rendered above, fading out
+PREVIEW_FADE_OUT_MS = 600          # length of the disappear animation
+PREVIEW_SCREEN_MARGIN_PX = 16      # gap from the screen edges (fallback anchor)
+PREVIEW_GLOW_ALPHA = 0.16          # peak alpha of the accent glow, widget side
 PREVIEW_TEXT_LIGHT_MODE = (70, 70, 75)       # dark grey on a light desktop
 PREVIEW_TEXT_DARK_MODE = (200, 200, 205)     # light grey on a dark desktop
-PREVIEW_VISIBLE_LINES = 3          # lines shown at full opacity
-PREVIEW_FADE_LINES = 2             # extra lines rendered above, fading out
-PREVIEW_FADE_OUT_MS = 600          # length of the disappear animation
-PREVIEW_SCREEN_MARGIN_PX = 16      # gap from the screen edges
 
 
 class StreamingPreviewWindow(QWidget):
-    """Floating preview panel for live streaming transcription text."""
+    """Floating preview for live streaming transcription text."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._text: str = ""
+        self._lines: list[str] = []
+        self._anchor: QWidget | None = None
         self._fade_anim: QPropertyAnimation | None = None
         self._setup_window()
-        self._apply_fixed_width()
         self.hide()
 
     # ── Window setup ──────────────────────────────────────────────────────
@@ -71,15 +72,12 @@ class StreamingPreviewWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
-    def _apply_fixed_width(self) -> None:
-        screen = QApplication.primaryScreen()
-        if screen is None:
-            self.setFixedWidth(320)
-            return
-        geo = screen.availableGeometry()
-        self.setFixedWidth(int(geo.width() * PREVIEW_WIDTH_FRACTION))
-
     # ── Public API ────────────────────────────────────────────────────────
+
+    def set_anchor(self, widget: QWidget | None) -> None:
+        """Widget the text streams out of. Re-read on every update so a
+        dragged or collapsed widget keeps its preview attached."""
+        self._anchor = widget
 
     def set_text(self, text: str) -> None:
         """Update the preview content. Called per streaming round.
@@ -96,8 +94,7 @@ class StreamingPreviewWindow(QWidget):
             self.setWindowOpacity(1.0)
             return
         self.setWindowOpacity(1.0)
-        self._resize_for_text()
-        self._anchor_bottom_right()
+        self._layout()
         if not self.isVisible():
             self.show()
         self.update()
@@ -105,6 +102,7 @@ class StreamingPreviewWindow(QWidget):
     def clear(self) -> None:
         """Clear text without animating."""
         self._text = ""
+        self._lines = []
         self.update()
 
     def fade_out(self) -> None:
@@ -124,15 +122,9 @@ class StreamingPreviewWindow(QWidget):
     def _on_fade_finished(self) -> None:
         self.hide()
         self._text = ""
+        self._lines = []
         self.setWindowOpacity(1.0)
         self._fade_anim = None
-
-    def position_near_widget(self, widget_pos: QPoint, widget_w: int, widget_h: int) -> None:
-        """Kept for backwards-compatibility with callers. Position is now
-        independent of the recorder widget — always bottom-right of screen.
-        """
-        self._apply_fixed_width()
-        self._anchor_bottom_right()
 
     # ── Layout helpers ────────────────────────────────────────────────────
 
@@ -141,12 +133,26 @@ class StreamingPreviewWindow(QWidget):
         f.setPointSize(PREVIEW_FONT_SIZE_PT)
         return f
 
-    def _wrap_lines(self) -> list[str]:
-        """Word-wrap the current text into lines that fit the inner width."""
+    def _line_height(self) -> int:
+        return QFontMetrics(self._font()).height() + PREVIEW_LINE_SPACING_PX
+
+    @staticmethod
+    def _max_lines_rendered() -> int:
+        return PREVIEW_VISIBLE_LINES + PREVIEW_FADE_LINES
+
+    @staticmethod
+    def _screen_rect() -> QRect:
+        screen = QApplication.primaryScreen()
+        return screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
+
+    def _max_inner_width(self) -> int:
+        return max(1, int(self._screen_rect().width() * PREVIEW_WIDTH_FRACTION) - PREVIEW_PADDING_PX * 2)
+
+    def _wrap_lines(self, inner_w: int) -> list[str]:
+        """Word-wrap the current text into lines that fit inner_w."""
         if not self._text:
             return []
         fm = QFontMetrics(self._font())
-        inner_w = max(1, self.width() - PREVIEW_PADDING_PX * 2)
         words = self._text.split()
         lines: list[str] = []
         current = ""
@@ -173,6 +179,31 @@ class StreamingPreviewWindow(QWidget):
             lines.append(current)
         return lines
 
+    def _layout(self) -> None:
+        """Size to the (last few) wrapped lines and pin next to the anchor."""
+        fm = QFontMetrics(self._font())
+        inner_max = self._max_inner_width()
+        self._lines = self._wrap_lines(inner_max)[-self._max_lines_rendered():]
+        content_w = max((fm.horizontalAdvance(line) for line in self._lines), default=1)
+        width = min(inner_max, content_w) + PREVIEW_PADDING_PX * 2
+        height = self._line_height() * max(1, len(self._lines)) + PREVIEW_PADDING_PX * 2
+        self.setFixedSize(width, height)
+
+        screen = self._screen_rect()
+        anchor = self._anchor if (self._anchor is not None and self._anchor.isVisible()) else None
+        if anchor is not None:
+            geo = anchor.geometry()
+            x = geo.x() - PREVIEW_GAP_PX - width
+            y = geo.y() + geo.height() // 2 - height // 2
+        else:
+            x = screen.x() + screen.width() - width - PREVIEW_SCREEN_MARGIN_PX
+            y = screen.y() + screen.height() - height - PREVIEW_SCREEN_MARGIN_PX
+        x = max(screen.x(), min(x, screen.x() + screen.width() - width))
+        y = max(screen.y(), min(y, screen.y() + screen.height() - height))
+        self.move(x, y)
+
+    # ── Colours ───────────────────────────────────────────────────────────
+
     @staticmethod
     def _system_is_dark() -> bool:
         scheme = QGuiApplication.styleHints().colorScheme()
@@ -183,33 +214,7 @@ class StreamingPreviewWindow(QWidget):
         return QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
 
     def _text_color(self) -> QColor:
-        if PREVIEW_BACKGROUND:
-            return QColor(225, 230, 240)
         return QColor(*(PREVIEW_TEXT_DARK_MODE if self._system_is_dark() else PREVIEW_TEXT_LIGHT_MODE))
-
-    def _line_height(self) -> int:
-        return QFontMetrics(self._font()).height() + PREVIEW_LINE_SPACING_PX
-
-    def _max_lines_rendered(self) -> int:
-        return PREVIEW_VISIBLE_LINES + PREVIEW_FADE_LINES
-
-    # ── Sizing & positioning ──────────────────────────────────────────────
-
-    def _resize_for_text(self) -> None:
-        """Grow height upward to fit wrapped lines, capped at visible+fade."""
-        lines = self._wrap_lines()
-        n = min(len(lines), self._max_lines_rendered()) if lines else 1
-        h = self._line_height() * n + PREVIEW_PADDING_PX * 2
-        self.setFixedHeight(h)
-
-    def _anchor_bottom_right(self) -> None:
-        screen = QApplication.primaryScreen()
-        if screen is None:
-            return
-        geo = screen.availableGeometry()
-        x = geo.x() + geo.width() - self.width() - PREVIEW_SCREEN_MARGIN_PX
-        y = geo.y() + geo.height() - self.height() - PREVIEW_SCREEN_MARGIN_PX
-        self.move(x, y)
 
     # ── Painting ──────────────────────────────────────────────────────────
 
@@ -218,83 +223,53 @@ class StreamingPreviewWindow(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
-        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-
-        bg = QColor(20, 22, 28)
-        bg.setAlpha(PREVIEW_BG_ALPHA)
-        if PREVIEW_BACKGROUND:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(bg)
-            painter.drawRoundedRect(rect, PREVIEW_BORDER_RADIUS, PREVIEW_BORDER_RADIUS)
-            border = QColor(120, 180, 255)
-            border.setAlpha(60)
-            painter.setPen(QPen(border, 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(rect, PREVIEW_BORDER_RADIUS, PREVIEW_BORDER_RADIUS)
-
-        if not self._text:
+        if not self._lines:
             return
 
-        # Clip everything that follows to the rounded rect so the gradient
-        # and text don't bleed past the corners.
-        clip_path = QPainterPath()
-        clip_path.addRoundedRect(rect, PREVIEW_BORDER_RADIUS, PREVIEW_BORDER_RADIUS)
-        painter.setClipPath(clip_path)
+        # Faint accent glow: strongest at the widget (right) side, dissolving
+        # leftward, so the text reads as emanating from the widget.
+        rect = QRectF(self.rect())
+        accent = QColor(COLOR_WIDGET_RECORDING)
+        glow = QLinearGradient(rect.left(), 0, rect.right(), 0)
+        clear = QColor(accent)
+        clear.setAlphaF(0.0)
+        peak = QColor(accent)
+        peak.setAlphaF(PREVIEW_GLOW_ALPHA)
+        glow.setColorAt(0.0, clear)
+        glow.setColorAt(1.0, peak)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(glow)
+        radius = rect.height() / 2
+        painter.drawRoundedRect(rect, radius, radius)
 
         font = self._font()
         painter.setFont(font)
         fm = QFontMetrics(font)
         line_h = self._line_height()
 
-        # Pick the most recent (visible + fade) lines so older content
-        # naturally rolls off the top.
-        all_lines = self._wrap_lines()
-        max_n = self._max_lines_rendered()
-        lines = all_lines[-max_n:]
-
         text_color = self._text_color()
         # Bare text needs a whisper of contrast against whatever is behind it.
         shadow_color = QColor(255, 255, 255) if text_color.lightness() < 128 else QColor(0, 0, 0)
 
-        inner_left = PREVIEW_PADDING_PX
+        right = self.width() - PREVIEW_PADDING_PX
         bottom_y = self.height() - PREVIEW_PADDING_PX
 
-        # Draw lines from bottom upward.
-        n = len(lines)
-        for idx_from_bottom, line in enumerate(reversed(lines)):
+        # Draw lines from bottom upward, right-aligned so the newest words
+        # sit against the widget.
+        for idx_from_bottom, line in enumerate(reversed(self._lines)):
             baseline = bottom_y - idx_from_bottom * line_h - fm.descent()
-            # idx_from_bottom 0 is the newest (bottom) line; visible lines
-            # are 0..PREVIEW_VISIBLE_LINES-1; older lines fade based on
-            # how far past the visible window they are.
+            x = right - fm.horizontalAdvance(line)
             if idx_from_bottom < PREVIEW_VISIBLE_LINES:
                 alpha = PREVIEW_TEXT_ALPHA
             else:
                 fade_idx = idx_from_bottom - PREVIEW_VISIBLE_LINES + 1
-                # Linear fade across PREVIEW_FADE_LINES steps.
                 ratio = max(0.0, 1.0 - fade_idx / (PREVIEW_FADE_LINES + 1))
                 alpha = int(PREVIEW_TEXT_ALPHA * ratio)
-            if not PREVIEW_BACKGROUND:
-                s = QColor(shadow_color)
-                s.setAlpha(alpha // 3)
-                painter.setPen(s)
-                painter.drawText(int(inner_left) + 1, int(baseline) + 1, line)
+            s = QColor(shadow_color)
+            s.setAlpha(alpha // 3)
+            painter.setPen(s)
+            painter.drawText(int(x) + 1, int(baseline) + 1, line)
             c = QColor(text_color)
             c.setAlpha(alpha)
             painter.setPen(c)
-            painter.drawText(int(inner_left), int(baseline), line)
-
-        # Top fade gradient: dissolves anything above the visible window.
-        # Only paint it when we actually have overflow rendered above.
-        if PREVIEW_BACKGROUND and n > PREVIEW_VISIBLE_LINES:
-            fade_h = line_h * PREVIEW_FADE_LINES + PREVIEW_PADDING_PX
-            fade_rect = QRectF(rect.left(), rect.top(), rect.width(), fade_h)
-            gradient = QLinearGradient(0, fade_rect.top(), 0, fade_rect.bottom())
-            bg_solid = QColor(bg)
-            bg_solid.setAlpha(PREVIEW_BG_ALPHA)
-            bg_clear = QColor(bg)
-            bg_clear.setAlpha(0)
-            gradient.setColorAt(0.0, bg_solid)
-            gradient.setColorAt(1.0, bg_clear)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(gradient)
-            painter.drawRect(fade_rect)
+            painter.drawText(int(x), int(baseline), line)
