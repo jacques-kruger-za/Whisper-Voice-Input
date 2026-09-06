@@ -33,6 +33,11 @@ NUM_BARS = 60
 # self-noise + room tone sits in 0.02..0.04. Without this, the bar strip
 # shows a constant "thick line" of background noise during pauses.
 BAR_NOISE_FLOOR = 0.05
+# Opacity of the dark surfaces behind the icon. Tuned so the light-grey
+# idle icon still reads on a white page.
+CIRCLE_BG_ALPHA = 0.45
+DOCK_PLATE_ALPHA = 0.70
+IDLE_BORDER_ALPHA_MIN = 0.70   # idle border breathes between this and 1.0
 
 
 def get_assets_dir() -> str:
@@ -314,7 +319,7 @@ class FloatingWidget(QWidget):
         self._glow_intensity = 0.0
         self._breathing_scale = 1.0
         self._breathing_direction = 1
-        self._idle_glow = 0.6
+        self._idle_glow = 0.85
         self._idle_glow_direction = 1
         self._idle_border_width = 2.5
         self._error_flash_alpha = 0
@@ -542,7 +547,7 @@ class FloatingWidget(QWidget):
             self._idle_glow += self._idle_glow_direction * 0.008
             if self._idle_glow >= 1.0:
                 self._idle_glow_direction = -1
-            elif self._idle_glow <= 0.4:
+            elif self._idle_glow <= IDLE_BORDER_ALPHA_MIN:
                 self._idle_glow_direction = 1
 
             self._idle_border_width += self._idle_glow_direction * 0.02
@@ -621,7 +626,7 @@ class FloatingWidget(QWidget):
     def _draw_dock_plate(self, painter: QPainter, circle_size: int) -> None:
         """Dark plate behind the circle, flat against the screen edge."""
         color = QColor(COLOR_BG_DARK)
-        color.setAlphaF(0.55)
+        color.setAlphaF(DOCK_PLATE_ALPHA)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(color)
         left = self.width() - circle_size
@@ -801,10 +806,10 @@ class FloatingWidget(QWidget):
             painter.drawLine(QPointF(x, y_top), QPointF(x, y_bottom))
 
     def _draw_background(self, painter: QPainter, center: QPointF, radius: float) -> None:
-        """Draw the dark circular background with 10% transparency."""
+        """Draw the dark circular background behind the icon."""
         painter.setPen(Qt.PenStyle.NoPen)
         bg_color = QColor(COLOR_BG_DARK)
-        bg_color.setAlphaF(0.10)
+        bg_color.setAlphaF(CIRCLE_BG_ALPHA)
         painter.setBrush(bg_color)
         painter.drawEllipse(center, radius, radius)
 
