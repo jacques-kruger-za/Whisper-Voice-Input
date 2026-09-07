@@ -3,7 +3,7 @@ project: Whisper-Voice-Input
 status: active
 last_updated: 2026-09-07
 current_focus: "v1.3.0 stabilised: docked widget, history + recovery, target pre-check, clipboard preservation, focus restore all signed off by Jacques 2026-09-07"
-next_step: "Rebuild exe (dist is pre-recovery, frozen uiautomation path untested); then custom-vocab alias replacement"
+next_step: "Custom-vocab alias replacement (canonical → mishearings map in cleanup), then MVP polish: onboarding, smart errors"
 blockers: none
 key_decisions:
   - "2026-05-03: preview-and-finalize streaming (full transcribe at VAD silence) over LocalAgreement word commits; latter lost text"
@@ -21,6 +21,7 @@ recent_milestones:
   - "2026-09-07: issue #1 dock widget + hide-to-bar; PRs #8 #9 merged; issues #2 #3 #4 closed"
   - "2026-09-07: issue #5 session record + recovery (tray, Ctrl+Alt+V), UIA target pre-check, clipboard preservation"
   - "2026-09-07: focus restore verified live: tray click returns to the text box, widget click never leaves it"
+  - "2026-09-07: exe rebuilt from 75e22d3; frozen uiautomation + WinEvent hook verified from the exe log; issues #1 #5 closed"
 ---
 
 # Whisper-Voice-Input — Project Overview

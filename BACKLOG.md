@@ -5,6 +5,9 @@ Raw inbox for features, issues, and bugs. Unsorted, ungroomed, no sequencing. Ca
 ## Features
 
 - [ ] Always-listening mode (consider — currently hotkey-triggered)
+- [ ] Settings UI for the paste-last hotkey (Ctrl+Alt+V today, setting only)
+- [ ] Recent Dictations: delete / clear-all
+- [ ] Preview: make the glow strength and line count user-tunable if Jacques keeps adjusting them
 
 ## Issues
 
@@ -19,10 +22,7 @@ Raw inbox for features, issues, and bugs. Unsorted, ungroomed, no sequencing. Ca
 
 <!-- Auto-populated by /project-hygiene --fix when open GitHub issues aren't reflected here. -->
 
-- [ ] #1 Dock widget to right edge + hide-to-bar (scoped in ROADMAP → v1.3.0)
-- [ ] #5 Clipboard history in tray (scoped in ROADMAP → v1.4.0)
-- [ ] #6 Modern settings UI, light/dark theme (scoped in ROADMAP → v1.4.0)
-- [ ] #2, #3, #4 shipped in v1.1.0 but still open on GitHub — close them
+- [ ] #6 Modern settings UI, light/dark theme (scoped in ROADMAP → v1.4.0). #1 and #5 shipped 2026-09-07 and closed.
 
 ## From Sessions
 
