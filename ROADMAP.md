@@ -22,7 +22,8 @@ The work below was largely informed by GitHub issues #1–#6 and a series of dic
 ### Architecture & bug fixes
 
 - [x] **Callout popup retired** (issue #3) — was a placeholder for streaming feedback that didn't stream. Replaced by the bar strip; streaming will inject directly into the editor.
-- [x] **Self-focus bug fixed** — hotkey path no longer captures our own widget's HWND when it's the foreground window. Falls back to the polled external HWND tracker.
+- [x] **Self-focus bug fixed** — hotkey path no longer captures our own widget's HWND when it's the foreground window.
+- [x] **Focus restore hardened (2026-09-07)** — widget is a non-activating window so a click never takes focus; Explorer shell windows are never remembered as targets; restore re-focuses the exact control, verifies the foreground and retries once; a WinEvent hook replaces the 250 ms poll.
 - [x] **Position-clamp on restore** — wider bar-strip layout no longer leaves the widget off-screen on launch.
 - [x] **Whisper model upgraded** — default switched to `small` (vs `tiny`); meaningfully better proper-noun accuracy and fewer hallucinations.
 
