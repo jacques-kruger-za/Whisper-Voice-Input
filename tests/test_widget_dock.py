@@ -111,7 +111,15 @@ def test_hover_zone_is_only_the_visible_part():
     assert w._in_hover_zone(w.width() - 1)                # the circle: hovered
 
 
+def test_widget_never_takes_activation():
+    from PyQt6.QtCore import Qt
+    w = FloatingWidget("compact")
+    assert w.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus
+    assert w.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+
+
 if __name__ == "__main__":
+    test_widget_never_takes_activation()
     test_hover_zone_is_only_the_visible_part()
     test_collapse_animates_to_target_when_visible()
     test_docks_to_right_edge_and_drags_vertically_only()

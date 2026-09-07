@@ -369,8 +369,12 @@ class FloatingWidget(QWidget):
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
+            # WS_EX_NOACTIVATE on Windows: a click on the widget never steals
+            # focus from the user's editor, so there is nothing to restore.
+            | Qt.WindowType.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setMouseTracking(True)
         self.setWindowOpacity(WIDGET_OPACITY)
 

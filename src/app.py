@@ -433,8 +433,7 @@ class VoiceInputApp(QObject):
         # commits paste into the already-focused target.
         if not self._streaming_injected_any:
             hwnd = self._saved_hwnd
-            if hwnd and is_window_valid(hwnd):
-                restore_foreground_window(hwnd)
+            if hwnd and is_window_valid(hwnd) and restore_foreground_window(hwnd):
                 self._streaming_injected_any = True
                 QTimer.singleShot(
                     STREAM_FOCUS_SETTLE_MS,
@@ -442,7 +441,8 @@ class VoiceInputApp(QObject):
                 )
                 return
             else:
-                logger.warning("Streaming: no valid focus target at finalize")
+                logger.warning("Streaming: no valid focus target at finalize — keeping on clipboard")
+                self._target_editable = False   # _deliver keeps it on the clipboard + notifies
                 self._streaming_injected_any = True
 
         self._inject_streaming_chunk(" " + cleaned)
