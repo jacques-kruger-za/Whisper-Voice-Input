@@ -11,6 +11,8 @@ DEFAULT_HOTKEY = {"ctrl": True, "shift": True, "alt": False, "key": "space"}
 # prefix needed). Ctrl+Shift+C chosen as a low-collision combo that doesn't
 # clash with the universal Ctrl+C copy shortcut (Shift makes the difference).
 DEFAULT_COMMAND_HOTKEY = {"ctrl": True, "shift": True, "alt": False, "key": "c"}
+# Re-paste the last dictation (whole session) into the focused field.
+DEFAULT_PASTE_LAST_HOTKEY = {"ctrl": True, "shift": False, "alt": True, "key": "v"}
 
 # Hotkey debounce (milliseconds) - prevents key bounce and rapid re-fire
 HOTKEY_DEBOUNCE_MS = 500

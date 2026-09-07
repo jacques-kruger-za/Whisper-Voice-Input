@@ -10,6 +10,7 @@ from .constants import (
     APP_AUTHOR,
     DEFAULT_HOTKEY,
     DEFAULT_COMMAND_HOTKEY,
+    DEFAULT_PASTE_LAST_HOTKEY,
     DEFAULT_MODEL,
     DEFAULT_LANGUAGE,
     DEFAULT_ENGINE,
@@ -33,6 +34,8 @@ class Settings:
         return {
             "hotkey": DEFAULT_HOTKEY.copy(),
             "command_hotkey": DEFAULT_COMMAND_HOTKEY.copy(),
+            "paste_last_hotkey": DEFAULT_PASTE_LAST_HOTKEY.copy(),
+            "preserve_clipboard": True,
             "audio_device": None,  # None = system default
             "engine": DEFAULT_ENGINE,
             "model": DEFAULT_MODEL,
@@ -194,6 +197,19 @@ class Settings:
     @widget_position.setter
     def widget_position(self, value: tuple[int, int] | None) -> None:
         self.set("widget_position", list(value) if value else None)
+
+    @property
+    def paste_last_hotkey(self) -> dict:
+        return self._settings.get("paste_last_hotkey", DEFAULT_PASTE_LAST_HOTKEY.copy())
+
+    @property
+    def preserve_clipboard(self) -> bool:
+        """Restore the user's clipboard a few seconds after each paste."""
+        return bool(self._settings.get("preserve_clipboard", True))
+
+    @preserve_clipboard.setter
+    def preserve_clipboard(self, value: bool) -> None:
+        self.set("preserve_clipboard", bool(value))
 
     @property
     def widget_collapsed(self) -> bool:

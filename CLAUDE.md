@@ -280,6 +280,7 @@ All dependencies are listed in `requirements.txt` with minimum versions. Key pac
 | `pyautogui>=0.9.54` | Keyboard simulation | Paste simulation |
 | `pynput>=1.7.6` | Global hotkey capture | Background listener |
 | `platformdirs>=4.0.0` | Directory resolution | Settings/logs paths |
+| `uiautomation>=2.0.20` | Paste-target pre-check | Is the focused control editable? Wraps comtypes; needs `comtypes` hidden import in the spec |
 
 **Note**: `faster-whisper` depends on `onnxruntime` which requires Python 3.12 (no 3.13+/3.14 wheels available).
 

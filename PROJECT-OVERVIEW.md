@@ -2,8 +2,8 @@
 project: Whisper-Voice-Input
 status: active
 last_updated: 2026-09-07
-current_focus: "v1.3.0: widget now docks to the right screen edge with hide-to-bar (issue #1); awaiting Jacques visual sign-off"
-next_step: "Jacques eyeballs the docked widget; then custom-vocab alias replacement"
+current_focus: "v1.3.0: docked widget shipped and signed off; dictation history + recovery, UIA paste-target pre-check, clipboard preservation just landed"
+next_step: "Jacques tests recovery flows (tray Paste/Copy Last, Ctrl+Alt+V, no-text-field notice); rebuild exe; then custom-vocab alias replacement"
 blockers: none
 key_decisions:
   - "2026-05-03: preview-and-finalize streaming (full transcribe at VAD silence) over LocalAgreement word commits; latter lost text"
@@ -12,11 +12,13 @@ key_decisions:
   - "2026-05-26: preview panel anchored bottom-right of screen, independent of the widget position"
   - "2026-09-07: streamer carries a generation counter; rounds that started before finalize/stop are discarded"
   - "2026-09-07: widget docks to the right screen edge (x pinned, y free); hide = thin bar that expands on hover"
+  - "2026-09-07: paste loss fixed by layering (Wispr/Superwhisper pattern): keep every chunk in history, UIA pre-check before paste, restore clipboard 3s after"
 recent_milestones:
   - "2026-05-03: v1.1.0 — voice commands, vocabulary, visual state redesign, streaming"
   - "2026-05-26: v1.2.0 — language lock, bottom-right upward-growing preview panel"
   - "2026-09-07: autostart registers run.vbs; preview no longer persists after commit"
   - "2026-09-07: issue #1 dock widget + hide-to-bar; PRs #8 #9 merged; issues #2 #3 #4 closed"
+  - "2026-09-07: issue #5 session record + recovery (tray, Ctrl+Alt+V), UIA target pre-check, clipboard preservation"
 ---
 
 # Whisper-Voice-Input — Project Overview
@@ -54,6 +56,7 @@ For *future* work, see `ROADMAP.md` (sequenced) and `BACKLOG.md` (raw inbox).
 
 ## Work Log
 
+- **2026-09-07** — Dictation history + recovery, UI Automation paste-target pre-check, clipboard preservation (issue #5, `uiautomation` dependency added)
 - **2026-09-07** — Dock widget + hide-to-bar, issue #1; CI smoke workflow (PR #8) and README ops review (PR #9) merged; repo pruned of stale branches
 - **2026-09-07** — Fix streaming preview persisting after finalize/stop (`690e5f8`); autostart registers `run.vbs` (`e0d3e42`)
 - **v1.2.0** — Language list locked to English + Afrikaans (`2779613`); preview panel bottom-right, upward-growing 3 lines (`158bc91`)

@@ -30,6 +30,10 @@ from .recognition import (
 )
 from .config.constants import SAMPLE_RATE
 from .input import HotkeyManager, inject_text
+from .input.target_check import focused_control_is_editable
+from .recognition.history import DictationHistory
+from platformdirs import user_data_dir
+from .config.constants import APP_NAME, APP_AUTHOR
 from .input.window_focus import (
     save_foreground_window, restore_foreground_window,
     is_window_valid, get_foreground_window_if_external, get_window_title,
@@ -56,6 +60,7 @@ class VoiceInputApp(QObject):
     streaming_finalized = pyqtSignal(str)  # finalize-thread → UI thread, raw text
     _hotkey_signal = pyqtSignal(object)  # HWND from hotkey thread → main thread
     _command_hotkey_signal = pyqtSignal(object)  # HWND from command hotkey thread
+    _paste_last_signal = pyqtSignal()            # paste-last hotkey thread → main
 
     def __init__(self, app: QApplication):
         super().__init__()
@@ -93,6 +98,17 @@ class VoiceInputApp(QObject):
         self._hotkey_manager = HotkeyManager()
         # Separate listener for the command-only capture hotkey
         self._command_hotkey_manager = HotkeyManager()
+        # Re-paste the last dictation on demand
+        self._paste_last_hotkey_manager = HotkeyManager()
+
+        # Every finalized chunk of every session — recovery when a paste
+        # lands nowhere. Persisted next to vocabulary.json.
+        self._history = DictationHistory(Path(user_data_dir(APP_NAME, APP_AUTHOR)))
+        # UI Automation verdict on the paste target, taken at session start:
+        # True = editable, False = clearly not, None = unknown (paste anyway).
+        self._target_editable: bool | None = None
+        self._warned_no_target = False
+        logger.info("Target check self-test: %s", focused_control_is_editable())
         # Tracks whether the recorder is currently capturing for a command
         # (vs dictation). Mutually exclusive with dictation recording.
         self._command_capturing = False
@@ -143,6 +159,7 @@ class VoiceInputApp(QObject):
         self.error_occurred.connect(self._on_error)
         self._hotkey_signal.connect(self._toggle_with_focus)
         self._command_hotkey_signal.connect(self._toggle_command_capture)
+        self._paste_last_signal.connect(self._paste_last)
 
         # Audio level callback
         self._recorder.set_level_callback(self._on_audio_level_raw)
@@ -158,6 +175,9 @@ class VoiceInputApp(QObject):
         self._command_hotkey_manager.set_hotkey(self._settings.command_hotkey)
         self._command_hotkey_manager.set_callback(self._on_command_hotkey_pressed)
         self._command_hotkey_manager.start()
+        self._paste_last_hotkey_manager.set_hotkey(self._settings.paste_last_hotkey)
+        self._paste_last_hotkey_manager.set_callback(self._paste_last_signal.emit)
+        self._paste_last_hotkey_manager.start()
 
         logger.info("Hotkey listeners started (dictation + command)")
 
@@ -193,6 +213,10 @@ class VoiceInputApp(QObject):
         self._tray.show_widget.connect(self._show_widget)
         self._tray.hide_widget.connect(self._hide_widget)
         self._tray.toggle_collapsed.connect(self._toggle_widget_collapsed)
+        self._tray.paste_last.connect(self._paste_last)
+        self._tray.copy_last.connect(self._copy_last)
+        self._tray.copy_text.connect(self._copy_to_clipboard)
+        self._tray.set_recent(self._history.recent(10))
         self._tray.set_widget_collapsed(self._widget.collapsed)
         self._tray.open_settings.connect(self._open_settings)
         self._tray.reset_state.connect(self._reset_state)
@@ -267,6 +291,7 @@ class VoiceInputApp(QObject):
 
             # Copy text to clipboard first (available for manual paste as fallback)
             pyperclip.copy(text)
+            self._history.append(text)
 
             # Try to restore focus and inject
             hwnd = self._saved_hwnd
@@ -293,17 +318,20 @@ class VoiceInputApp(QObject):
                         4000
                     )
                 QTimer.singleShot(2000, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
+                self._end_session()
         else:
             logger.info("Transcription complete: no speech detected")
             self._callout.clear()
             self._saved_hwnd = None
+            self._end_session()
             self.state_changed.emit(STATE_IDLE, "No speech detected")
             QTimer.singleShot(2000, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
 
     def _inject_after_focus(self, text: str) -> None:
         """Inject text after focus has settled (UI thread, called via QTimer)."""
         logger.info("Injecting text into focused window")
-        inject_text(text)
+        self._deliver(text)
+        self._end_session()
         self.state_changed.emit(STATE_IDLE, "Done!")
         QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
 
@@ -424,9 +452,64 @@ class VoiceInputApp(QObject):
         if not text:
             return
         logger.info("Streaming inject (finalized): %r", text[:80])
-        inject_text(text)
+        self._history.append(text)
+        self._deliver(text)
         self._streaming_injected_any = True
         self._fade_preview()
+
+    # ── Delivery + recovery ──────────────────────────────────────────────
+
+    def _deliver(self, text: str) -> None:
+        """Paste into the target, or — if the pre-check said the target
+        cannot take text — keep the whole session on the clipboard and say
+        so once. Either way the text is already in history."""
+        if self._target_editable is False:
+            pyperclip.copy(self._history.last_text or text)
+            if not self._warned_no_target and self._tray:
+                self._warned_no_target = True
+                self._tray.show_message(
+                    APP_NAME,
+                    "No text field is focused. Dictation kept on the clipboard "
+                    "and under Recent Dictations.",
+                    4000,
+                )
+            return
+        inject_text(text, restore_clipboard=self._settings.preserve_clipboard)
+
+    def _end_session(self) -> None:
+        if self._history.end() is not None and self._tray:
+            self._tray.set_recent(self._history.recent(10))
+        self._target_editable = None
+        self._warned_no_target = False
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        pyperclip.copy(text)
+        if self._tray:
+            self._tray.show_message(APP_NAME, f"Copied {len(text)} characters.", 2000)
+
+    def _copy_last(self) -> None:
+        text = self._history.last_text
+        if text:
+            self._copy_to_clipboard(text)
+        elif self._tray:
+            self._tray.show_message(APP_NAME, "Nothing dictated yet.", 2000)
+
+    def _paste_last(self) -> None:
+        """Re-paste the last dictation (whole session) into the last
+        external window. Hotkey or tray."""
+        text = self._history.last_text
+        if not text:
+            if self._tray:
+                self._tray.show_message(APP_NAME, "Nothing dictated yet.", 2000)
+            return
+        hwnd = get_foreground_window_if_external() or self._last_external_hwnd
+        if hwnd and is_window_valid(hwnd):
+            restore_foreground_window(hwnd)
+        logger.info("Paste last dictation: %d chars into HWND=%s", len(text), hwnd)
+        QTimer.singleShot(
+            STREAM_FOCUS_SETTLE_MS,
+            lambda: inject_text(text, restore_clipboard=self._settings.preserve_clipboard),
+        )
 
     def _fade_preview(self) -> None:
         """Tell the preview UI to fade its current contents away."""
@@ -616,6 +699,9 @@ class VoiceInputApp(QObject):
         # Only save HWND when starting a new recording (not when stopping)
         if self._state == STATE_IDLE:
             self._saved_hwnd = saved_hwnd
+            self._target_editable = focused_control_is_editable()
+            self._warned_no_target = False
+            self._history.begin()
         self.toggle_recording()
 
     # ── Command-only capture lifecycle ────────────────────────────────────
@@ -940,6 +1026,7 @@ class VoiceInputApp(QObject):
             self._streamer = None
         if self._preview_window is not None:
             self._preview_window.fade_out()
+        self._end_session()
         self.state_changed.emit(STATE_IDLE, "Done!")
         QTimer.singleShot(1500, lambda: self.state_changed.emit(STATE_IDLE, "Ready"))
 
@@ -1149,6 +1236,7 @@ class VoiceInputApp(QObject):
             self._streamer = None
         if self._preview_window is not None:
             self._preview_window.set_text("")
+        self._end_session()
 
         # Hide callout
         self._callout.clear()
@@ -1178,6 +1266,7 @@ class VoiceInputApp(QObject):
 
         # Stop everything
         self._focus_tracker.stop()
+        self._paste_last_hotkey_manager.stop()
         self._silence_poll_timer.stop()
         self._hotkey_manager.stop()
         self._command_hotkey_manager.stop()
@@ -1222,6 +1311,7 @@ class VoiceInputApp(QObject):
 
         # Stop focus tracker, silence poll, and hotkey listeners
         self._focus_tracker.stop()
+        self._paste_last_hotkey_manager.stop()
         self._silence_poll_timer.stop()
         logger.debug("Stopping hotkey listeners")
         self._hotkey_manager.stop()

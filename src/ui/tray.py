@@ -2,6 +2,7 @@
 
 import os
 import sys
+import time
 from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QApplication
 from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import pyqtSignal, QObject
@@ -34,6 +35,9 @@ class TrayIcon(QObject):
     show_widget = pyqtSignal()
     hide_widget = pyqtSignal()
     toggle_collapsed = pyqtSignal()
+    paste_last = pyqtSignal()
+    copy_last = pyqtSignal()
+    copy_text = pyqtSignal(str)   # a Recent Dictations entry
     open_settings = pyqtSignal()
     reset_state = pyqtSignal()
     restart_app = pyqtSignal()
@@ -80,6 +84,17 @@ class TrayIcon(QObject):
         # Collapse to / expand from the screen-edge bar
         self._collapse_action = self._menu.addAction("Collapse to Edge")
         self._collapse_action.triggered.connect(self.toggle_collapsed.emit)
+
+        self._menu.addSeparator()
+
+        # Recovery: the last dictation is never only on the clipboard
+        paste_action = self._menu.addAction("Paste Last Dictation")
+        paste_action.triggered.connect(self.paste_last.emit)
+        copy_action = self._menu.addAction("Copy Last Dictation")
+        copy_action.triggered.connect(self.copy_last.emit)
+        self._recent_menu = self._menu.addMenu("Recent Dictations")
+        self.set_recent([])
+        self._menu.addSeparator()
 
         # Settings
         settings_action = self._menu.addAction("Settings")
@@ -164,6 +179,18 @@ class TrayIcon(QObject):
             self._widget_action.setText("Hide Widget")
         else:
             self._widget_action.setText("Show Widget")
+
+    def set_recent(self, sessions: list[tuple[float, str]]) -> None:
+        """Rebuild the Recent Dictations submenu; clicking an entry copies it."""
+        self._recent_menu.clear()
+        if not sessions:
+            self._recent_menu.addAction("(nothing yet)").setEnabled(False)
+            return
+        for ts, text in sessions:
+            snippet = text if len(text) <= 48 else text[:47] + "…"
+            label = f"{time.strftime('%H:%M', time.localtime(ts))}   {snippet}"
+            action = self._recent_menu.addAction(label)
+            action.triggered.connect(lambda _checked=False, t=text: self.copy_text.emit(t))
 
     def set_widget_collapsed(self, collapsed: bool) -> None:
         """Update the Collapse/Expand menu text."""

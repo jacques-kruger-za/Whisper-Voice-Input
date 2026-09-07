@@ -231,6 +231,9 @@ class SettingsWindow(QDialog):
         self._show_widget_check = QCheckBox("Show widget on startup")
         layout.addWidget(self._show_widget_check)
 
+        self._preserve_clipboard_check = QCheckBox("Restore my clipboard a few seconds after pasting")
+        layout.addWidget(self._preserve_clipboard_check)
+
         return group
 
     def _create_about_section(self) -> QGroupBox:
@@ -478,6 +481,7 @@ class SettingsWindow(QDialog):
         # Startup
         self._autostart_check.setChecked(self._settings.start_with_windows)
         self._show_widget_check.setChecked(self._settings.show_widget)
+        self._preserve_clipboard_check.setChecked(self._settings.preserve_clipboard)
         self._collapse_check.setChecked(self._settings.widget_collapsed)
 
         # Appearance
@@ -720,6 +724,7 @@ class SettingsWindow(QDialog):
         # Startup
         self._settings.start_with_windows = self._autostart_check.isChecked()
         self._settings.show_widget = self._show_widget_check.isChecked()
+        self._settings.preserve_clipboard = self._preserve_clipboard_check.isChecked()
         old_collapsed = self._settings.widget_collapsed
         new_collapsed = self._collapse_check.isChecked()
         self._settings.widget_collapsed = new_collapsed

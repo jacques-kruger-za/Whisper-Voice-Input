@@ -20,7 +20,7 @@ a = Analysis(
         ('assets', 'assets'),  # Include icons and images
         (faster_whisper_assets, 'faster_whisper/assets'),  # Silero VAD model for faster-whisper
     ],
-    hiddenimports=[],
+    hiddenimports=['comtypes', 'comtypes.stream'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

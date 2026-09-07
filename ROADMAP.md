@@ -66,9 +66,15 @@ Earlier S3 prototype had commands and dictation sharing a session via wake-word 
 - [x] Right-click on the widget: **Hide** / **Show** (collapse to an 8 px state-coloured bar on the edge, expands on hover) and **Disable** (same as tray Hide Widget).
 - [x] Widget size applies to both the expanded shape and the bar. Collapsed state persists in settings.
 
-### Issue #5 — Clipboard history in tray
+### Issue #5 — Clipboard history in tray — Shipped 2026-09-07
 
-Right-click tray → list of recent dictations. Each "snippet" = the text produced between one start-recording and stop-recording. Copy / delete / clear all. *Self-contained, doesn't touch transcription.*
+Reframed after research into Wispr Flow / Superwhisper: the real problem was that a paste landing nowhere lost the text, because only the last chunk lived on the clipboard.
+
+- [x] **Session record** — every finalized chunk of every session is kept (`history.jsonl`, last 50 sessions). "Last dictation" means the whole session, not the last sentence.
+- [x] **Recovery** — tray **Paste Last Dictation** / **Copy Last Dictation**, a **Recent Dictations** submenu (click copies), and a global paste-last hotkey (default Ctrl+Alt+V, `paste_last_hotkey` setting, no UI yet).
+- [x] **UI Automation pre-check** — at session start the focused control is inspected; if it clearly cannot take text (button, menu, image…) the paste is skipped, the session text is kept on the clipboard and a notification says so. Unknown targets (Flutter, games, RDP) still get a paste.
+- [x] **Clipboard preservation** — the user's clipboard comes back 3 s after a paste; a pending restore is cancelled by the next streaming chunk so the original wins. Setting: *Restore my clipboard a few seconds after pasting*. Not applied when the pre-check said "no target".
+- [ ] Delete / clear-all in the Recent Dictations menu; hotkey UI for paste-last.
 
 ### Issue #6 — Modern settings UI
 
@@ -81,7 +87,7 @@ Windows-2026 styling, light/dark system theme adaptation. *We just refactored se
 ### High Priority
 
 - [ ] **First-run onboarding** — welcome dialog with hotkey + setup instructions
-- [ ] **Clipboard preservation** — save/restore user clipboard around paste
+- [x] **Clipboard preservation** — shipped 2026-09-07 (see issue #5)
 - [ ] **Success feedback** — visual confirmation after paste lands
 - [ ] **Smart error messages** — "check microphone" when audio is silent, "model not responding" for transcription timeouts, etc. Fade in near widget when visible; toast (bottom-right) when widget is hidden.
 - [ ] **Error log in tray menu** — quick access to recent errors/logs without opening the file system
@@ -139,6 +145,6 @@ Windows-2026 styling, light/dark system theme adaptation. *We just refactored se
 | v1.0.1 | Shipped | Stability fixes, recovery mechanisms, language detection |
 | v1.1.0 | Shipped 2026-05-03 | Voice commands & vocabulary (issue #2), visual state redesign (issue #2), preview-and-finalize streaming (issue #4), separate command hotkey, retired callout (issue #3), VAD lifecycle |
 | v1.2.0 | Shipped 2026-05-26 | Language list locked to English + Afrikaans, bottom-right preview panel, autostart fix |
-| v1.3.0 | In progress | ~~Issue #1 (dock + hide-to-bar)~~ shipped 2026-09-07; custom-vocab alias replacement, MVP polish (onboarding, smart errors) |
+| v1.3.0 | In progress | ~~Issue #1 (dock + hide-to-bar)~~, ~~issue #5 (session record + recovery, target pre-check, clipboard preservation)~~ shipped 2026-09-07; custom-vocab alias replacement, MVP polish (onboarding, smart errors) |
 | v1.4.0 | Planned | Issue #5 (clipboard history), modern settings UI (issue #6), windows installer, auto-update |
 | v2.0.0 | Aspirational | Per-app shortcut profiles, snippet expansion, cross-platform |
