@@ -37,6 +37,7 @@ from .config.constants import APP_NAME, APP_AUTHOR
 from .input.window_focus import (
     save_foreground_window, restore_foreground_window,
     is_window_valid, get_foreground_window_if_external, get_window_title,
+    start_foreground_hook, stop_foreground_hook,
 )
 from .ui import FloatingWidget, TrayIcon, SettingsWindow
 from .ui.callout import TranscriptionCallout
@@ -74,7 +75,7 @@ class VoiceInputApp(QObject):
         self._error_recovery_timer_id: int | None = None
         self._transcription_thread: threading.Thread | None = None
         self._saved_hwnd: int | None = None  # Foreground window to restore after transcription
-        self._last_external_hwnd: int | None = None  # Last non-self foreground window (polled)
+        self._last_external_hwnd: int | None = None  # Last non-self foreground window (event hook)
         self._timeout_timer = QTimer()
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(self._check_transcription_timeout)
@@ -228,9 +229,9 @@ class VoiceInputApp(QObject):
         # Focus tracker — polls foreground window every 250ms, ignoring our own windows.
         # Gives widget/tray clicks a correct "last external HWND" since clicking
         # our own UI makes it foreground before the click handler runs.
-        self._focus_tracker = QTimer()
-        self._focus_tracker.timeout.connect(self._track_foreground_window)
-        self._focus_tracker.start(250)
+        # Event-driven: Windows tells us when another process's window
+        # becomes foreground or a control in it gains focus. No polling.
+        start_foreground_hook(self._on_external_foreground)
 
         # First run message
         if self._settings.first_run:
@@ -631,15 +632,10 @@ class VoiceInputApp(QObject):
         else:
             super().timerEvent(event)
 
-    def _track_foreground_window(self) -> None:
-        """Poll the foreground window, keeping the last non-self HWND.
-
-        Runs every 250ms via QTimer. Only records windows belonging to
-        other processes so that widget/tray clicks have a correct target.
-        """
-        hwnd = get_foreground_window_if_external()
-        if hwnd:
-            self._last_external_hwnd = hwnd
+    def _on_external_foreground(self, hwnd: int) -> None:
+        """Foreground hook callback (main thread): remember the last window
+        of another process, so widget/tray clicks have a paste target."""
+        self._last_external_hwnd = hwnd
 
     def _on_hotkey_pressed(self) -> None:
         """Handle hotkey press (from hotkey thread).
@@ -1265,7 +1261,7 @@ class VoiceInputApp(QObject):
             self._settings.widget_position = self._widget.save_position()
 
         # Stop everything
-        self._focus_tracker.stop()
+        stop_foreground_hook()
         self._paste_last_hotkey_manager.stop()
         self._silence_poll_timer.stop()
         self._hotkey_manager.stop()
@@ -1310,7 +1306,7 @@ class VoiceInputApp(QObject):
             self._settings.widget_position = self._widget.save_position()
 
         # Stop focus tracker, silence poll, and hotkey listeners
-        self._focus_tracker.stop()
+        stop_foreground_hook()
         self._paste_last_hotkey_manager.stop()
         self._silence_poll_timer.stop()
         logger.debug("Stopping hotkey listeners")

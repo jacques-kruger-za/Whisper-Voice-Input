@@ -175,6 +175,83 @@ def restore_foreground_window(hwnd: int) -> bool:
     return False
 
 
+# ── Event-driven foreground tracking (replaces a 250 ms poll) ─────────────
+#
+# SetWinEventHook with WINEVENT_OUTOFCONTEXT: Windows calls us on the
+# installing thread's message loop only when the foreground window or the
+# focused control changes. Zero cost while nothing changes. Must be
+# installed from a thread that pumps messages (Qt's main thread does).
+
+EVENT_SYSTEM_FOREGROUND = 0x0003
+EVENT_OBJECT_FOCUS = 0x8005
+WINEVENT_OUTOFCONTEXT = 0x0000
+WINEVENT_SKIPOWNPROCESS = 0x0002
+GA_ROOT = 2
+
+_WINEVENTPROC = ctypes.WINFUNCTYPE(
+    None, ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD, ctypes.wintypes.HWND,
+    ctypes.wintypes.LONG, ctypes.wintypes.LONG, ctypes.wintypes.DWORD, ctypes.wintypes.DWORD,
+)
+_user32.SetWinEventHook.argtypes = [
+    ctypes.wintypes.DWORD, ctypes.wintypes.DWORD, ctypes.wintypes.HMODULE, _WINEVENTPROC,
+    ctypes.wintypes.DWORD, ctypes.wintypes.DWORD, ctypes.wintypes.DWORD,
+]
+_user32.SetWinEventHook.restype = ctypes.wintypes.HANDLE
+_user32.UnhookWinEvent.argtypes = [ctypes.wintypes.HANDLE]
+_user32.UnhookWinEvent.restype = ctypes.wintypes.BOOL
+_user32.GetAncestor.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT]
+_user32.GetAncestor.restype = ctypes.wintypes.HWND
+
+_hooks: list = []          # hook handles
+_hook_proc = None          # keep the callback alive for the hook's lifetime
+
+
+def start_foreground_hook(on_external_foreground) -> bool:
+    """Call on_external_foreground(top_level_hwnd) whenever another
+    process's window becomes foreground or a control in it gains focus.
+    Shell windows are ignored. Runs on the installing thread."""
+    global _hook_proc
+    if _hooks:
+        return True
+
+    def _proc(hook, event, hwnd, id_object, id_child, thread, ms):
+        try:
+            if not hwnd:
+                return
+            root = _user32.GetAncestor(hwnd, GA_ROOT) or hwnd
+            pid = ctypes.wintypes.DWORD()
+            _user32.GetWindowThreadProcessId(root, ctypes.byref(pid))
+            if pid.value == os.getpid() or is_shell_window(root):
+                return
+            if event == EVENT_OBJECT_FOCUS:
+                _focus_by_window[int(root)] = int(hwnd)
+                if len(_focus_by_window) > _FOCUS_CACHE_MAX:
+                    del _focus_by_window[next(iter(_focus_by_window))]
+            else:
+                remember_focused_control(root)
+            on_external_foreground(int(root))
+        except Exception as e:  # never let an exception escape into Win32
+            logger.debug("Foreground hook error: %s", e)
+
+    _hook_proc = _WINEVENTPROC(_proc)
+    flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+    for ev in (EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_FOCUS):
+        h = _user32.SetWinEventHook(ev, ev, None, _hook_proc, 0, 0, flags)
+        if h:
+            _hooks.append(h)
+    ok = len(_hooks) == 2
+    logger.info("Foreground hook %s", "installed" if ok else "FAILED")
+    return ok
+
+
+def stop_foreground_hook() -> None:
+    global _hook_proc
+    for h in _hooks:
+        _user32.UnhookWinEvent(h)
+    _hooks.clear()
+    _hook_proc = None
+
+
 def is_window_valid(hwnd: int) -> bool:
     """Check if a window handle is still valid."""
     return bool(_user32.IsWindow(hwnd))
